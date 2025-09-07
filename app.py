@@ -5,8 +5,9 @@ from datetime import datetime, timedelta
 from PIL import Image
 import io
 import uuid
+import inspect  # for streamlit-sortables API compatibility check
 
-# 追加: オプション依存（なくても動く）
+# オプション依存（未インストールでも動作継続）
 # ドラッグ＆ドロップ: streamlit-sortables
 try:
     from streamlit_sortables import sort_items
@@ -100,7 +101,7 @@ class Task:
         self.date = date  # "YYYY-MM-DD"
         self.priority = priority  # low/medium/high
         self.labels = labels or []
-        self.attachments = attachments or []  # base64データURI
+        self.attachments = attachments or []  # base64データURIの添付
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
 
@@ -260,7 +261,7 @@ def generate_week_html(week_dates):
     return ''.join(html)
 
 
-# D&Dボードの描画（streamlit-sortables使用）
+# D&Dボードの描画（streamlit-sortables使用、バージョン差に自動対応）
 def render_dnd_board(week_dates):
     if not SORTABLE_AVAILABLE:
         st.info("ドラッグ＆ドロップを使うには requirements.txt に 'streamlit-sortables' を追加してください。")
@@ -275,40 +276,58 @@ def render_dnd_board(week_dates):
         tasks = get_tasks_for_date(ds)
         containers[ds] = [{"id": t.id, "content": t.title} for t in tasks]
 
-    # 並び替えUI（横方向で7コンテナを並べる）
-    new_containers = sort_items(
-        containers,
-        multi_containers=True,
-        direction="horizontal",
-        styles={
-            "container": {
+    # バージョン差に対応した可変引数を用意
+    kwargs = {"multi_containers": True, "direction": "horizontal", "key": "dnd_board"}
+    try:
+        params = inspect.signature(sort_items).parameters
+        if "styles" in params:
+            kwargs["styles"] = {
+                "container": {
+                    "minHeight": "220px",
+                    "backgroundColor": "#f8fafc",
+                    "border": "2px dashed #e2e8f0",
+                    "borderRadius": "8px",
+                    "padding": "8px",
+                    "margin": "6px",
+                },
+                "item": {
+                    "padding": "6px 10px",
+                    "margin": "4px 0",
+                    "backgroundColor": "white",
+                    "border": "1px solid #e2e8f0",
+                    "borderRadius": "8px",
+                    "cursor": "grab",
+                },
+            }
+        elif "container_style" in params and "item_style" in params:
+            kwargs["container_style"] = {
                 "minHeight": "220px",
                 "backgroundColor": "#f8fafc",
                 "border": "2px dashed #e2e8f0",
                 "borderRadius": "8px",
                 "padding": "8px",
                 "margin": "6px",
-            },
-            "item": {
+            }
+            kwargs["item_style"] = {
                 "padding": "6px 10px",
                 "margin": "4px 0",
                 "backgroundColor": "white",
                 "border": "1px solid #e2e8f0",
                 "borderRadius": "8px",
                 "cursor": "grab",
-            },
-        },
-        key="dnd_board",
-    )
+            }
+        # さらに古い版はスタイル無指定のみ対応 → そのまま
+    except Exception:
+        pass
+
+    # 並び替えUIの実行
+    new_containers = sort_items(containers, **kwargs)
 
     # 変更反映（タスクID -> 新しい日付）
     id_to_new_date = {}
     for ds, items in new_containers.items():
         for item in items:
-            if isinstance(item, dict) and "id" in item:
-                tid = item["id"]
-            else:
-                tid = str(item)
+            tid = item["id"] if isinstance(item, dict) and "id" in item else str(item)
             id_to_new_date[tid] = ds
 
     changed = False
