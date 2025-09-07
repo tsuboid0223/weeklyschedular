@@ -35,7 +35,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# CSS（曜日ヘッダを上部、ボタン・カードを直下に表示）
+# CSS（D&D復活・曜日ヘッダを上部、追加ボタン直下、カードをその下に）
 st.markdown(
     """
 <style>
@@ -47,7 +47,7 @@ st.markdown(
 }
 .week-header h2 { margin:0; font-size: 1.1rem; font-weight:700; letter-spacing: 0.3px; }
 
-/* 曜日ヘッダ（上部に固定表示） */
+/* 曜日ヘッダ（上部） */
 .dc-head { display:flex; justify-content:space-between; align-items:center; padding:.55rem .8rem; color:#fff; font-weight:700; border-radius:10px; }
 .dc-name { font-size:.98rem; letter-spacing:.3px; }
 .dc-date { font-size:.9rem; opacity:.9; }
@@ -61,10 +61,7 @@ st.markdown(
 .day-head-5 { background: linear-gradient(135deg,#fca5a5,#ef4444); } /* 土 */
 .day-head-6 { background: linear-gradient(135deg,#5eead4,#14b8a6); } /* 日 */
 
-/* カラム内ボディ（Streamlitのコンテナで囲む） */
-.body-box .st-emotion-cache-ue6h4q { padding: 0 !important; } /* Streamlitの枠内余白調整（将来変わる可能性あり） */
-
-/* 追加ボタン */
+/* 追加ボタンをヘッダ直下に */
 .add-btn .stButton>button {
   width: 100%; padding: .45rem .75rem; border-radius: 9999px;
   border: 1px solid var(--border); background:#ffffff; color:#374151; font-weight:700;
@@ -86,6 +83,10 @@ st.markdown(
 .priority-low { background-color: #bbf7d0; color: #059669; }
 .desc { font-size: 0.88rem; color:#374151; line-height: 1.45; margin-top: 0.2rem; }
 .label-tag { display:inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 9999px; font-size: 0.72rem; margin: 2px 4px 0 0; }
+
+/* D&Dボードの見た目補強 */
+.dnd-wrapper { border:1px solid var(--border); border-radius:12px; padding: .6rem .8rem; background:#fff; }
+.dnd-caption { color: var(--muted); font-size: .85rem; margin-top: .25rem; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -325,31 +326,37 @@ def modal_or_expander(title: str, key: str):
             yield
 
 
-# D&Dボード
+# D&Dボード（再表示用に key を戻し、バージョン差にも対応）
 def render_dnd_board(week_dates):
     if not SORTABLE_AVAILABLE:
         st.info("ドラッグ＆ドロップを使うには requirements.txt に 'streamlit-sortables' を追加してください。")
         return
 
-    st.markdown("#### 🧲 ドラッグ＆ドロップでタスクを曜日移動（週内）")
+    st.markdown('<div class="dnd-wrapper">', unsafe_allow_html=True)
 
     date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
     all_week_tasks = [t for ds in date_keys for t in get_tasks_for_date(ds)]
     short_ids = build_short_ids(all_week_tasks)
     short_to_full = {v: k for k, v in short_ids.items()}
 
+    # コンテナ配列（各曜日1コンテナ、itemsは文字列配列）
     containers_payload = []
     for ds, d in zip(date_keys, week_dates):
         items = [f"{t.title} [id:{short_ids[t.id]}]" for t in get_tasks_for_date(ds)]
         containers_payload.append({"header": f"{format_date_jp(d)}（{len(items)}）", "items": items})
 
-    kwargs = {"multi_containers": True, "direction": "horizontal"}
+    # API差異に対応＋keyを付与（週と内容で変化）
+    kwargs = {
+        "multi_containers": True,
+        "direction": "horizontal",
+        "key": f"dnd_{date_keys[0]}_{week_signature(week_dates)}",
+    }
     try:
         params = inspect.signature(sort_items).parameters
         if "styles" in params:
             kwargs["styles"] = {
                 "container": {
-                    "minHeight": "220px",
+                    "minHeight": "160px",
                     "backgroundColor": "#f8fafc",
                     "border": "2px dashed #e2e8f0",
                     "borderRadius": "10px",
@@ -367,7 +374,7 @@ def render_dnd_board(week_dates):
             }
         elif "container_style" in params and "item_style" in params:
             kwargs["container_style"] = {
-                "minHeight": "220px",
+                "minHeight": "160px",
                 "backgroundColor": "#f8fafc",
                 "border": "2px dashed #e2e8f0",
                 "borderRadius": "10px",
@@ -385,8 +392,14 @@ def render_dnd_board(week_dates):
     except Exception:
         pass
 
-    new_containers = sort_items(containers_payload, **kwargs)
+    try:
+        new_containers = sort_items(containers_payload, **kwargs)
+    except Exception as e:
+        st.error(f"D&Dコンポーネントの描画でエラー: {e}")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
 
+    # [id:xxxx] を抽出して ID→日付に変換
     id_to_new_date, pattern = {}, re.compile(r"\[id:([0-9a-fA-F]+)\]\s*$")
     for idx, cont in enumerate(new_containers):
         ds = date_keys[idx] if idx < len(date_keys) else None
@@ -415,6 +428,9 @@ def render_dnd_board(week_dates):
         persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
         st.success("タスクの日付を更新しました。")
         st.rerun()
+
+    st.markdown('<div class="dnd-caption">カードを別曜日へドラッグ＆ドロップすると自動で反映されます。</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # 画像プレビュー
@@ -602,11 +618,11 @@ def main():
         week_dates_sb = get_week_dates(st.session_state.current_week)
         html_data = generate_week_html(week_dates_sb)
         st.download_button(
-                "📤 HTMLダウンロード",
-                data=html_data,
-                file_name=f"tasks_dashboard_{week_dates_sb[0].strftime('%Y%m%d')}_{week_dates_sb[6].strftime('%Y%m%d')}.html",
-                mime="text/html",
-            )
+            "📤 HTMLダウンロード",
+            data=html_data,
+            file_name=f"tasks_dashboard_{week_dates_sb[0].strftime('%Y%m%d')}_{week_dates_sb[6].strftime('%Y%m%d')}.html",
+            mime="text/html",
+        )
 
         st.subheader("危険な操作")
         if st.button("🗑️ 全データクリア", type="secondary"):
@@ -632,21 +648,20 @@ def main():
         if st.button("次の週 ➡"):
             goto_next_week()
 
-    # D&Dモード
-    with st.expander("🧲 ドラッグ＆ドロップでタスクを曜日移動（週内タスク）", expanded=False):
+    # D&Dモード（expanded=True にして常時見えるように）
+    with st.expander("🧲 ドラッグ＆ドロップでタスクを曜日移動（週内）", expanded=True):
         if SORTABLE_AVAILABLE:
             render_dnd_board(week_dates)
         else:
             st.info("この機能を使うには requirements.txt に 'streamlit-sortables' を追加してください。")
 
-    # 週間ビュー（各カラムの上から：ヘッダ → 追加ボタン → タスクリスト）
+    # 週間ビュー（各カラム：曜日ヘッダ → 追加ボタン → タスクリスト）
     cols = st.columns(7)
     weekdays = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
 
     for i, (date, col, weekday) in enumerate(zip(week_dates, cols, weekdays)):
         ds = date.strftime("%Y-%m-%d")
         with col:
-            # 曜日ヘッダ（最上部）
             st.markdown(
                 f'<div class="dc-head day-head-{i}">'
                 f'  <div class="dc-name">{weekday}</div>'
@@ -655,88 +670,81 @@ def main():
                 unsafe_allow_html=True,
             )
 
-            # ボディ枠（ここに「＋追加」→タスクリストを直下に）
-            body = st.container()
-            with body:
-                st.markdown('<div class="body-box">', unsafe_allow_html=True)
+            # 追加ボタン（ヘッダ直下）
+            st.markdown('<div class="add-btn">', unsafe_allow_html=True)
+            if st.button("＋ タスク追加", key=f"add_{ds}", use_container_width=True):
+                open_new_task_modal(ds)
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
-                # 追加ボタン（直上・フル幅）
-                st.markdown('<div class="add-btn">', unsafe_allow_html=True)
-                if st.button("＋ タスク追加", key=f"add_{ds}", use_container_width=True):
-                    open_new_task_modal(ds)
-                    st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
+            # タスクリスト（新しい順）
+            day_tasks = sorted(get_tasks_for_date(ds), key=lambda t: t.created_at, reverse=True)
+            if not day_tasks:
+                st.caption("タスクなし")
+            else:
+                for task in day_tasks:
+                    pcls = f"{task.priority}"
+                    badge_cls = f"priority-badge priority-{task.priority}"
+                    st.markdown(f'<div class="task-card {pcls}">', unsafe_allow_html=True)
 
-                # タスクリスト（新しい順＝作成日時降順）
-                day_tasks = sorted(get_tasks_for_date(ds), key=lambda t: t.created_at, reverse=True)
-                if not day_tasks:
-                    st.caption("タスクなし")
-                else:
-                    for task in day_tasks:
-                        pcls = f"{task.priority}"
-                        badge_cls = f"priority-badge priority-{task.priority}"
-                        st.markdown(f'<div class="task-card {pcls}">', unsafe_allow_html=True)
+                    c1, c2 = st.columns([5, 1])
+                    with c1:
+                        st.markdown(f'<div class="task-title">{task.title}</div>', unsafe_allow_html=True)
+                        if task.priority != "medium":
+                            ptxt = {"high": "高", "medium": "中", "low": "低"}[task.priority]
+                            st.markdown(f'<span class="{badge_cls}">{ptxt}</span>', unsafe_allow_html=True)
+                    with c2:
+                        ec, dc = st.columns(2)
+                        with ec:
+                            if st.button("✏️", key=f"edit_{task.id}", help="編集"):
+                                open_edit_modal(task.id)
+                                st.rerun()
+                        with dc:
+                            if st.button("🗑️", key=f"delete_{task.id}", help="削除"):
+                                delete_task(task.id)
+                                st.rerun()
 
-                        c1, c2 = st.columns([5, 1])
-                        with c1:
-                            st.markdown(f'<div class="task-title">{task.title}</div>', unsafe_allow_html=True)
-                            if task.priority != "medium":
-                                ptxt = {"high": "高", "medium": "中", "low": "低"}[task.priority]
-                                st.markdown(f'<span class="{badge_cls}">{ptxt}</span>', unsafe_allow_html=True)
-                        with c2:
-                            ec, dc = st.columns(2)
-                            with ec:
-                                if st.button("✏️", key=f"edit_{task.id}", help="編集"):
-                                    open_edit_modal(task.id)
-                                    st.rerun()
-                            with dc:
-                                if st.button("🗑️", key=f"delete_{task.id}", help="削除"):
-                                    delete_task(task.id)
-                                    st.rerun()
+                    if task.description:
+                        st.markdown(f'<div class="desc">{task.description}</div>', unsafe_allow_html=True)
 
-                        if task.description:
-                            st.markdown(f'<div class="desc">{task.description}</div>', unsafe_allow_html=True)
+                    if task.labels:
+                        st.markdown(
+                            "".join([f'<span class="label-tag">{lb}</span>' for lb in task.labels]),
+                            unsafe_allow_html=True,
+                        )
 
-                        if task.labels:
-                            st.markdown(
-                                "".join([f'<span class="label-tag">{lb}</span>' for lb in task.labels]),
-                                unsafe_allow_html=True,
-                            )
+                    if task.attachments:
+                        st.markdown("**📎 添付ファイル:**")
+                        for att in task.attachments:
+                            if att["type"].startswith("image/"):
+                                if CLICKABLE_AVAILABLE:
+                                    clicked = clickable_images(
+                                        [att["data"]],
+                                        titles=[att["name"]],
+                                        div_style={"display": "inline-block", "padding": "2px"},
+                                        img_style={
+                                            "margin": "4px",
+                                            "height": "110px",
+                                            "border": "1px solid #e5e7eb",
+                                            "border-radius": "6px",
+                                        },
+                                        key=f"thumb_{task.id}_{att['id']}",
+                                    )
+                                    if clicked == 0:
+                                        open_image_modal(att)
+                                        st.rerun()
+                                else:
+                                    try:
+                                        b = base64.b64decode(att["data"].split(",")[1])
+                                        img = Image.open(io.BytesIO(b))
+                                        st.image(img, caption=att["name"], width=140)
+                                    except Exception as e:
+                                        st.error(f"画像の表示エラー: {str(e)}")
+                                    if st.button("🔍", key=f"view_{task.id}_{att['id']}", help="拡大表示"):
+                                        open_image_modal(att)
+                                        st.rerun()
 
-                        if task.attachments:
-                            st.markdown("**📎 添付ファイル:**")
-                            for att in task.attachments:
-                                if att["type"].startswith("image/"):
-                                    if CLICKABLE_AVAILABLE:
-                                        clicked = clickable_images(
-                                            [att["data"]],
-                                            titles=[att["name"]],
-                                            div_style={"display": "inline-block", "padding": "2px"},
-                                            img_style={
-                                                "margin": "4px",
-                                                "height": "110px",
-                                                "border": "1px solid #e5e7eb",
-                                                "border-radius": "6px",
-                                            },
-                                            key=f"thumb_{task.id}_{att['id']}",
-                                        )
-                                        if clicked == 0:
-                                            open_image_modal(att)
-                                            st.rerun()
-                                    else:
-                                        try:
-                                            b = base64.b64decode(att["data"].split(",")[1])
-                                            img = Image.open(io.BytesIO(b))
-                                            st.image(img, caption=att["name"], width=140)
-                                        except Exception as e:
-                                            st.error(f"画像の表示エラー: {str(e)}")
-                                        if st.button("🔍", key=f"view_{task.id}_{att['id']}", help="拡大表示"):
-                                            open_image_modal(att)
-                                            st.rerun()
-
-                        st.markdown("</div>", unsafe_allow_html=True)  # .task-card
-
-                st.markdown("</div>", unsafe_allow_html=True)  # .body-box
+                    st.markdown("</div>", unsafe_allow_html=True)  # .task-card
 
     # 編集モーダル
     render_edit_modal()
