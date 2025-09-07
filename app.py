@@ -1,4 +1,3 @@
-pip install streamlit-sortablejs streamlit-extras
 import streamlit as st
 import json
 import base64
