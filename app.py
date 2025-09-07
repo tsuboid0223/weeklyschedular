@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import json
 import base64
@@ -7,6 +8,9 @@ import io
 import uuid
 import inspect
 import re
+import hashlib
+from pathlib import Path
+import threading
 
 # オプション依存（未インストールでもアプリは動く）
 # ドラッグ＆ドロップ: streamlit-sortables
@@ -75,6 +79,29 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# 永続化（同一デプロイ中のリロードでも保持）
+DATA_FILE = Path("tasks_store.json")
+_PERSIST_LOCK = threading.Lock()
+
+
+def load_tasks_from_disk():
+    if DATA_FILE.exists():
+        try:
+            text = DATA_FILE.read_text(encoding="utf-8")
+            return json.loads(text)
+        except Exception:
+            return []
+    return []
+
+
+def persist_tasks_to_disk(task_dicts):
+    try:
+        with _PERSIST_LOCK:
+            DATA_FILE.write_text(json.dumps(task_dicts, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 # データクラス
 class Task:
     def __init__(self, id=None, title="", description="", date="", priority="medium", labels=None, attachments=None):
@@ -113,21 +140,27 @@ class Task:
             attachments=data.get('attachments', [])
         )
         if 'created_at' in data:
-            task.created_at = datetime.fromisoformat(data['created_at'])
+            try:
+                task.created_at = datetime.fromisoformat(data['created_at'])
+            except Exception:
+                task.created_at = datetime.now()
         if 'updated_at' in data:
-            task.updated_at = datetime.fromisoformat(data['updated_at'])
+            try:
+                task.updated_at = datetime.fromisoformat(data['updated_at'])
+            except Exception:
+                task.updated_at = datetime.now()
         return task
 
 
 # セッション状態
-if 'tasks' not in st.session_state:
-    st.session_state.tasks = []
-if 'current_week' not in st.session_state:
+if 'initialized' not in st.session_state:
+    # 起動時にディスクから読み込む
+    loaded = load_tasks_from_disk()
+    st.session_state.tasks = [Task.from_dict(d) for d in loaded]
     st.session_state.current_week = datetime.now().date()
-if 'image_modal_open' not in st.session_state:
     st.session_state.image_modal_open = False
-if 'image_modal' not in st.session_state:
     st.session_state.image_modal = None
+    st.session_state.initialized = True
 
 
 # ユーティリティ
@@ -153,10 +186,14 @@ def save_task(task):
         st.session_state.tasks[existing_index] = task
     else:
         st.session_state.tasks.append(task)
+    # 永続化
+    persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
 
 
 def delete_task(task_id):
     st.session_state.tasks = [task for task in st.session_state.tasks if task.id != task_id]
+    # 永続化
+    persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
 
 
 def process_uploaded_image(uploaded_file):
@@ -245,6 +282,15 @@ def build_short_ids(tasks):
     return mapping
 
 
+def week_signature(week_dates):
+    """D&Dウィジェットのkeyに混ぜるため、週内タスクのハッシュを作る（更新を確実に反映）"""
+    keys = {d.strftime("%Y-%m-%d") for d in week_dates}
+    items = [(t.id, t.date, t.updated_at.isoformat()) for t in st.session_state.tasks if t.date in keys]
+    items.sort()
+    s = json.dumps(items, ensure_ascii=False)
+    return hashlib.md5(s.encode("utf-8")).hexdigest()[:10]
+
+
 # D&Dボード（streamlit-sortables、バージョン差/週切替に対応）
 def render_dnd_board(week_dates):
     if not SORTABLE_AVAILABLE:
@@ -268,8 +314,8 @@ def render_dnd_board(week_dates):
         items = [f"{t.title} [id:{short_ids[t.id]}]" for t in get_tasks_for_date(ds)]
         containers_payload.append({"header": f"{format_date_jp(d)}（{len(items)}）", "items": items})
 
-    # 週ごとにkeyを変えて状態をリセット
-    dnd_key = f"dnd_board_{date_keys[0]}"
+    # 週ごと＋内容ごとにkeyを変えて、追加/削除も確実に反映
+    dnd_key = f"dnd_board_{date_keys[0]}_{week_signature(week_dates)}"
 
     # バージョン差に対応した可変引数
     kwargs = {"multi_containers": True, "direction": "horizontal", "key": dnd_key}
@@ -317,6 +363,8 @@ def render_dnd_board(week_dates):
             changed = True
 
     if changed:
+        # 永続化
+        persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
         st.success("タスクの日付を更新しました。")
         st.rerun()
     else:
@@ -364,6 +412,7 @@ def main():
         if st.button("🗑️ 全データクリア", type="secondary"):
             if st.checkbox("本当に削除しますか？"):
                 st.session_state.tasks = []
+                persist_tasks_to_disk([])
                 st.rerun()
 
     # 週表示
@@ -414,7 +463,7 @@ def main():
     cols = st.columns(7)
     weekdays = ['月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日', '日曜日']
 
-    for date, col, weekday in zip(week_dates, cols, weekdays):
+    for date, col, weekday in zip(week_dates, cols, weekdays)):
         with col:
             st.markdown(
                 f'<div class="day-head"><div class="day-name">{weekday}</div>'
@@ -489,3 +538,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
