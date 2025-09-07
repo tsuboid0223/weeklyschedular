@@ -7,20 +7,19 @@ import io
 import uuid
 import inspect
 import re
-import hashlib
 from pathlib import Path
 import threading
 from contextlib import contextmanager
 
 # 依存（未インストールでも動作継続）
-# ドラッグ＆ドロップ: streamlit-sortables
+# ドラッグ＆ドロップ: streamlit-sortables（任意）
 try:
     from streamlit_sortables import sort_items
     SORTABLE_AVAILABLE = True
 except Exception:
     SORTABLE_AVAILABLE = False
 
-# 画像サムネイルのクリック: streamlit-extras
+# サムネイルクリック: streamlit-extras（任意）
 try:
     from streamlit_extras.clickable_images import clickable_images
     CLICKABLE_AVAILABLE = True
@@ -35,7 +34,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# CSS（D&D復活・曜日ヘッダを上部、追加ボタン直下、カードをその下に）
+# CSS（曜日ヘッダを上、追加ボタン直下、カードがその下。D&Dボードも固定表示）
 st.markdown(
     """
 <style>
@@ -47,7 +46,7 @@ st.markdown(
 }
 .week-header h2 { margin:0; font-size: 1.1rem; font-weight:700; letter-spacing: 0.3px; }
 
-/* 曜日ヘッダ（上部） */
+/* 曜日ヘッダ（最上部） */
 .dc-head { display:flex; justify-content:space-between; align-items:center; padding:.55rem .8rem; color:#fff; font-weight:700; border-radius:10px; }
 .dc-name { font-size:.98rem; letter-spacing:.3px; }
 .dc-date { font-size:.9rem; opacity:.9; }
@@ -61,7 +60,7 @@ st.markdown(
 .day-head-5 { background: linear-gradient(135deg,#fca5a5,#ef4444); } /* 土 */
 .day-head-6 { background: linear-gradient(135deg,#5eead4,#14b8a6); } /* 日 */
 
-/* 追加ボタンをヘッダ直下に */
+/* 追加ボタン（ヘッダ直下・フル幅） */
 .add-btn .stButton>button {
   width: 100%; padding: .45rem .75rem; border-radius: 9999px;
   border: 1px solid var(--border); background:#ffffff; color:#374151; font-weight:700;
@@ -84,7 +83,7 @@ st.markdown(
 .desc { font-size: 0.88rem; color:#374151; line-height: 1.45; margin-top: 0.2rem; }
 .label-tag { display:inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 9999px; font-size: 0.72rem; margin: 2px 4px 0 0; }
 
-/* D&Dボードの見た目補強 */
+/* D&Dボードの見た目 */
 .dnd-wrapper { border:1px solid var(--border); border-radius:12px; padding: .6rem .8rem; background:#fff; }
 .dnd-caption { color: var(--muted); font-size: .85rem; margin-top: .25rem; }
 </style>
@@ -275,9 +274,7 @@ def generate_week_html(week_dates):
                 pclass = t.priority
                 ptext = {"high": "高", "medium": "中", "low": "低"}[t.priority]
                 html.append(f'<div class="task-card {pclass}">')
-                html.append(
-                    f'<div><strong>{t.title}</strong> <span class="priority-badge priority-{pclass}">{ptext}</span></div>'
-                )
+                html.append(f'<div><strong>{t.title}</strong> <span class="priority-badge priority-{pclass}">{ptext}</span></div>')
                 if t.description:
                     html.append(f'<div class="desc">{t.description}</div>')
                 if t.labels:
@@ -293,28 +290,6 @@ def generate_week_html(week_dates):
     return "".join(html)
 
 
-# D&Dユーティリティ
-def build_short_ids(tasks):
-    used, mapping = set(), {}
-    for t in tasks:
-        base = t.id.replace("-", "")
-        length = 6
-        sid = base[:length]
-        while sid in used and length < len(base):
-            length += 1
-            sid = base[:length]
-        used.add(sid)
-        mapping[t.id] = sid
-    return mapping
-
-
-def week_signature(week_dates):
-    keys = {d.strftime("%Y-%m-%d") for d in week_dates}
-    items = [(t.id, t.date, t.updated_at.isoformat()) for t in st.session_state.tasks if t.date in keys]
-    items.sort()
-    return hashlib.md5(json.dumps(items, ensure_ascii=False).encode("utf-8")).hexdigest()[:10]
-
-
 # st.modal のフォールバック
 @contextmanager
 def modal_or_expander(title: str, key: str):
@@ -326,30 +301,27 @@ def modal_or_expander(title: str, key: str):
             yield
 
 
-# D&Dボード（再表示用に key を戻し、バージョン差にも対応）
+# D&Dボード（keyを「週開始日」で安定化）
 def render_dnd_board(week_dates):
     if not SORTABLE_AVAILABLE:
-        st.info("ドラッグ＆ドロップを使うには requirements.txt に 'streamlit-sortables' を追加してください。")
+        st.info("この機能を使うには requirements.txt に 'streamlit-sortables' を追加してください。")
         return
 
     st.markdown('<div class="dnd-wrapper">', unsafe_allow_html=True)
 
     date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
-    all_week_tasks = [t for ds in date_keys for t in get_tasks_for_date(ds)]
-    short_ids = build_short_ids(all_week_tasks)
-    short_to_full = {v: k for k, v in short_ids.items()}
+    week_key = date_keys[0]  # 週開始日
 
     # コンテナ配列（各曜日1コンテナ、itemsは文字列配列）
     containers_payload = []
     for ds, d in zip(date_keys, week_dates):
-        items = [f"{t.title} [id:{short_ids[t.id]}]" for t in get_tasks_for_date(ds)]
+        items = [f"{t.title} [id:{t.id[:8]}]" for t in get_tasks_for_date(ds)]
         containers_payload.append({"header": f"{format_date_jp(d)}（{len(items)}）", "items": items})
 
-    # API差異に対応＋keyを付与（週と内容で変化）
     kwargs = {
         "multi_containers": True,
         "direction": "horizontal",
-        "key": f"dnd_{date_keys[0]}_{week_signature(week_dates)}",
+        "key": f"dnd_{week_key}",
     }
     try:
         params = inspect.signature(sort_items).parameters
@@ -392,15 +364,12 @@ def render_dnd_board(week_dates):
     except Exception:
         pass
 
-    try:
-        new_containers = sort_items(containers_payload, **kwargs)
-    except Exception as e:
-        st.error(f"D&Dコンポーネントの描画でエラー: {e}")
-        st.markdown('</div>', unsafe_allow_html=True)
-        return
+    # 実行
+    new_containers = sort_items(containers_payload, **kwargs)
 
-    # [id:xxxx] を抽出して ID→日付に変換
-    id_to_new_date, pattern = {}, re.compile(r"\[id:([0-9a-fA-F]+)\]\s*$")
+    # 並び替え結果を反映（末尾の [id:xxxxxxxx] を抜き出し）
+    id_to_new_date = {}
+    pattern = re.compile(r"\[id:([0-9a-fA-F-]{8})\]\s*$")
     for idx, cont in enumerate(new_containers):
         ds = date_keys[idx] if idx < len(date_keys) else None
         if ds is None:
@@ -412,9 +381,11 @@ def render_dnd_board(week_dates):
             if not m:
                 continue
             short = m.group(1)
-            full = short_to_full.get(short)
-            if full:
-                id_to_new_date[full] = ds
+            # フルIDが分からない場合のため、先頭8桁で一致するタスクにマップ
+            for t in st.session_state.tasks:
+                if t.id.startswith(short):
+                    id_to_new_date[t.id] = ds
+                    break
 
     changed = False
     for task in st.session_state.tasks:
@@ -430,7 +401,7 @@ def render_dnd_board(week_dates):
         st.rerun()
 
     st.markdown('<div class="dnd-caption">カードを別曜日へドラッグ＆ドロップすると自動で反映されます。</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 画像プレビュー
@@ -648,7 +619,7 @@ def main():
         if st.button("次の週 ➡"):
             goto_next_week()
 
-    # D&Dモード（expanded=True にして常時見えるように）
+    # D&Dモード（常時展開）
     with st.expander("🧲 ドラッグ＆ドロップでタスクを曜日移動（週内）", expanded=True):
         if SORTABLE_AVAILABLE:
             render_dnd_board(week_dates)
@@ -739,7 +710,7 @@ def main():
                                         img = Image.open(io.BytesIO(b))
                                         st.image(img, caption=att["name"], width=140)
                                     except Exception as e:
-                                        st.error(f"画像の表示エラー: {str(e)}")
+                                        st.error(f"画像の表示エラー: {e}")
                                     if st.button("🔍", key=f"view_{task.id}_{att['id']}", help="拡大表示"):
                                         open_image_modal(att)
                                         st.rerun()
