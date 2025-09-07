@@ -7,19 +7,20 @@ import io
 import uuid
 
 # 追加: オプション依存の読み込み（存在しなくても動作するフォールバックあり）
+# DnD（ドラッグ＆ドロップ）は streamlit-sortables を使用
 try:
-    # SortableJS ベースのドラッグ＆ドロップ
-    from streamlit_sortablejs import st_sortable
+    from streamlit_sortables import sort_items
     SORTABLE_AVAILABLE = True
 except Exception:
     SORTABLE_AVAILABLE = False
 
+# サムネイル画像のクリック対応（streamlit-extras）
 try:
-    # 画像をクリック可能にするユーティリティ
     from streamlit_extras.clickable_images import clickable_images
     CLICKABLE_AVAILABLE = True
 except Exception:
     CLICKABLE_AVAILABLE = False
+
 
 # ページ設定
 st.set_page_config(
@@ -86,27 +87,9 @@ st.markdown("""
         font-size: 0.75rem;
         margin: 0.1rem;
     }
-    /* D&D簡易カードの見た目 */
-    .dnd-item {
-        background: white;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 0.5rem 0.75rem;
-        margin: 0.35rem 0;
-        font-size: 0.9rem;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-        cursor: grab;
-        user-select: none;
-    }
-    .dnd-col {
-        background: #f8fafc;
-        border: 2px dashed #e2e8f0;
-        border-radius: 8px;
-        padding: 0.5rem;
-        min-height: 200px;
-    }
 </style>
 """, unsafe_allow_html=True)
+
 
 # データクラス
 class Task:
@@ -114,10 +97,10 @@ class Task:
         self.id = id or str(uuid.uuid4())
         self.title = title
         self.description = description
-        self.date = date
-        self.priority = priority
+        self.date = date  # "YYYY-MM-DD"
+        self.priority = priority  # low/medium/high
         self.labels = labels or []
-        self.attachments = attachments or []
+        self.attachments = attachments or []  # 画像などの添付（base64データURI）
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
 
@@ -142,14 +125,15 @@ class Task:
             description=data['description'],
             date=data['date'],
             priority=data['priority'],
-            labels=data['labels'],
-            attachments=data['attachments']
+            labels=data.get('labels', []),
+            attachments=data.get('attachments', [])
         )
         if 'created_at' in data:
             task.created_at = datetime.fromisoformat(data['created_at'])
         if 'updated_at' in data:
             task.updated_at = datetime.fromisoformat(data['updated_at'])
         return task
+
 
 # セッション状態の初期化
 if 'tasks' not in st.session_state:
@@ -161,20 +145,28 @@ if 'image_modal_open' not in st.session_state:
 if 'image_modal' not in st.session_state:
     st.session_state.image_modal = None
 
+
 # ユーティリティ関数
 def get_week_dates(start_date):
+    """指定した日付を含む週の7日（月曜起点）"""
     days_since_monday = start_date.weekday()
     monday = start_date - timedelta(days=days_since_monday)
     return [monday + timedelta(days=i) for i in range(7)]
 
+
 def format_date_jp(date):
+    """日本語形式で日付をフォーマット"""
     weekdays = ['月', '火', '水', '木', '金', '土', '日']
     return f"{date.month}/{date.day}({weekdays[date.weekday()]})"
 
+
 def get_tasks_for_date(date_str):
+    """指定した日付のタスクを取得"""
     return [task for task in st.session_state.tasks if task.date == date_str]
 
+
 def save_task(task):
+    """タスクを保存（新規/更新）"""
     existing_index = None
     for i, existing_task in enumerate(st.session_state.tasks):
         if existing_task.id == task.id:
@@ -186,10 +178,14 @@ def save_task(task):
     else:
         st.session_state.tasks.append(task)
 
+
 def delete_task(task_id):
+    """タスクを削除"""
     st.session_state.tasks = [task for task in st.session_state.tasks if task.id != task_id]
 
+
 def process_uploaded_image(uploaded_file):
+    """アップロードされた画像をbase64エンコードして保持"""
     if uploaded_file is not None:
         image_data = uploaded_file.read()
         base64_data = base64.b64encode(image_data).decode()
@@ -202,7 +198,8 @@ def process_uploaded_image(uploaded_file):
         }
     return None
 
-# 追加: 週次HTMLを生成
+
+# 週次HTMLを生成（単一HTML、画像は埋め込み）
 def generate_week_html(week_dates):
     weekdays_jp = ['月曜日','火曜日','水曜日','木曜日','金曜日','土曜日','日曜日']
     css = """
@@ -262,91 +259,86 @@ def generate_week_html(week_dates):
     html.append('</div></div>')
     return ''.join(html)
 
-# 追加: D&Dボードの描画（オプション）
+
+# D&Dボードの描画（streamlit-sortables使用）
 def render_dnd_board(week_dates):
     if not SORTABLE_AVAILABLE:
-        st.info("ドラッグ＆ドロップを有効化するには: pip install streamlit-sortablejs")
+        st.info("ドラッグ＆ドロップを使うには requirements.txt に 'streamlit-sortables' を追加してください。")
         return
 
     st.markdown("#### 🧲 ドラッグ＆ドロップでタスクを曜日移動")
-    cols = st.columns(7)
-    # 週内のタスクを準備
-    date_strs = [d.strftime("%Y-%m-%d") for d in week_dates]
-    tasks_map = {ds: get_tasks_for_date(ds) for ds in date_strs}
-    original_map = {t.id: t.date for ds in date_strs for t in tasks_map[ds]}
 
-    # 表示用アイテム（タイトルだけの簡易カード）
-    items_by_date = {
-        ds: [{"id": t.id, "content": f'<div class="dnd-item">{t.title}</div>'}] if False else [
-            {"id": t.id, "content": f'<div class="dnd-item">{t.title}</div>'} for t in tasks_map[ds]
-        ]
-        for ds in date_strs
-    }
+    # 7日分のアイテムを準備（key: 日付文字列, value: アイテム配列）
+    date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
+    containers = {}
+    for ds in date_keys:
+        tasks = get_tasks_for_date(ds)
+        containers[ds] = [{"id": t.id, "content": t.title} for t in tasks]
 
-    new_lists = {}
+    # 並び替えUI（横方向で7コンテナを並べる）
+    new_containers = sort_items(
+        containers,
+        multi_containers=True,
+        direction="horizontal",
+        container_style={
+            "minHeight": "220px",
+            "backgroundColor": "#f8fafc",
+            "border": "2px dashed #e2e8f0",
+            "borderRadius": "8px",
+            "padding": "8px",
+            "margin": "6px",
+        },
+        item_style={
+            "padding": "6px 10px",
+            "margin": "4px 0",
+            "backgroundColor": "white",
+            "border": "1px solid #e2e8f0",
+            "borderRadius": "8px",
+            "cursor": "grab",
+        },
+        key="dnd_board",
+    )
 
-    for i, (col, date) in enumerate(zip(cols, week_dates)):
-        ds = date.strftime("%Y-%m-%d")
-        with col:
-            st.markdown(f"**{format_date_jp(date)}**")
-            # 連結グループにすることで曜日間の移動が可能
-            returned = st_sortable(
-                items_by_date[ds],
-                key=f"dnd_{ds}",
-                options={
-                    "group": "tasks",
-                    "animation": 150,
-                    "swapThreshold": 0.5
-                },
-                # HTMLをそのまま表示
-                templates={"item": "{{content|safe}}"}
-            )
-            # returned は並び替え後のリスト（dict or str）を返す
-            new_lists[ds] = returned
-
-    # 新しい配置からタスクID -> 日付のマッピングを構築
+    # 変更反映（タスクID -> 新しい日付）
     id_to_new_date = {}
-    for ds, lst in new_lists.items():
-        for item in lst:
-            if isinstance(item, dict) and "id" in item:
-                tid = item["id"]
-            else:
-                # 返り値が単なるIDの配列などの場合に備えたフォールバック
-                tid = item
+    for ds, items in new_containers.items():
+        for item in items:
+            tid = item["id"] if isinstance(item, dict) else item
             id_to_new_date[tid] = ds
 
-    # 変更があれば反映
     changed = False
     for task in st.session_state.tasks:
-        if task.id in id_to_new_date:
-            new_date = id_to_new_date[task.id]
-            if task.date != new_date:
-                task.date = new_date
-                task.updated_at = datetime.now()
-                changed = True
+        new_date = id_to_new_date.get(task.id)
+        if new_date and new_date != task.date:
+            task.date = new_date
+            task.updated_at = datetime.now()
+            changed = True
 
     if changed:
         st.success("タスクの日付を更新しました。")
         st.rerun()
 
-# モーダル制御
+
+# モーダル制御（画像拡大）
 def open_image_modal(attachment):
     st.session_state.image_modal = attachment
     st.session_state.image_modal_open = True
+
 
 def close_image_modal():
     st.session_state.image_modal = None
     st.session_state.image_modal_open = False
 
+
 # メインアプリケーション
 def main():
     # ヘッダー
     st.markdown('<h1 class="main-header">📅 週間タスクスケジューラー</h1>', unsafe_allow_html=True)
-    
+
     # サイドバー
     with st.sidebar:
         st.header("⚙️ 設定")
-        
+
         # 週選択
         week_start = st.date_input(
             "週を選択",
@@ -354,15 +346,15 @@ def main():
             key="week_selector"
         )
         st.session_state.current_week = week_start
-        
+
         # タスク統計（全体）
         st.subheader("📊 タスク統計（全体）")
         total_tasks = len(st.session_state.tasks)
         high_priority = len([t for t in st.session_state.tasks if t.priority == 'high'])
         st.metric("総タスク数", total_tasks)
         st.metric("高優先度", high_priority)
-        
-        # データ管理
+
+        # データ管理（JSONエクスポート）
         st.subheader("💾 データ管理")
         if st.session_state.tasks:
             tasks_data = [task.to_dict() for task in st.session_state.tasks]
@@ -384,14 +376,14 @@ def main():
             file_name=f"tasks_dashboard_{week_dates[0].strftime('%Y%m%d')}_{week_dates[6].strftime('%Y%m%d')}.html",
             mime="text/html"
         )
-        
+
         # データクリア
         st.subheader("危険な操作")
         if st.button("🗑️ 全データクリア", type="secondary"):
             if st.checkbox("本当に削除しますか？"):
                 st.session_state.tasks = []
                 st.rerun()
-    
+
     # 週表示
     week_dates = get_week_dates(st.session_state.current_week)
     week_start_str = week_dates[0].strftime("%Y/%m/%d")
@@ -404,25 +396,25 @@ def main():
             render_dnd_board(week_dates)
             st.caption("タイトルのみの簡易カードで移動できます。移動後、自動で再描画されます。")
         else:
-            st.info("この機能を使うには `pip install streamlit-sortablejs` を実行してください。")
+            st.info("この機能を使うには requirements.txt に 'streamlit-sortables' を追加してください。")
 
     # 新しいタスク作成
     with st.expander("➕ 新しいタスクを作成", expanded=False):
         with st.form("new_task_form"):
             col1, col2 = st.columns([2, 1])
-            
+
             with col1:
                 title = st.text_input("タスクタイトル *", placeholder="例: 会議準備")
                 description = st.text_area("説明", placeholder="詳細な説明を入力...")
-            
+
             with col2:
                 task_date = st.date_input("日付", value=datetime.now().date())
                 priority = st.selectbox("優先度", ["low", "medium", "high"], index=1)
                 labels_input = st.text_input("ラベル (カンマ区切り)", placeholder="会議,重要")
-            
+
             uploaded_file = st.file_uploader("画像を添付", type=['png', 'jpg', 'jpeg', 'gif'])
             submitted = st.form_submit_button("💾 タスクを保存")
-            
+
             if submitted and title:
                 labels = [label.strip() for label in labels_input.split(',') if label.strip()]
                 attachments = []
@@ -441,57 +433,57 @@ def main():
                 save_task(new_task)
                 st.success(f"✅ タスク「{title}」を作成しました！")
                 st.rerun()
-    
+
     # 週間ビュー
     cols = st.columns(7)
     weekdays = ['月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日', '日曜日']
-    
+
     for i, (date, col, weekday) in enumerate(zip(week_dates, cols, weekdays)):
         with col:
             date_str = date.strftime("%Y-%m-%d")
             date_display = format_date_jp(date)
-            
+
             st.markdown(f"### {weekday}")
             st.markdown(f"**{date_display}**")
-            
+
             day_tasks = get_tasks_for_date(date_str)
-            
+
             if not day_tasks:
                 st.markdown('<div class="day-column">タスクなし</div>', unsafe_allow_html=True)
             else:
                 for task in day_tasks:
                     priority_class = f"task-card {task.priority}"
                     priority_badge_class = f"priority-badge priority-{task.priority}"
-                    
+
                     with st.container():
                         st.markdown(f'<div class="{priority_class}">', unsafe_allow_html=True)
-                        
+
                         col_title, col_actions = st.columns([3, 1])
                         with col_title:
                             st.markdown(f"**{task.title}**")
                             if task.priority != 'medium':
                                 priority_text = {'high': '高', 'medium': '中', 'low': '低'}[task.priority]
                                 st.markdown(f'<span class="{priority_badge_class}">{priority_text}</span>', unsafe_allow_html=True)
-                        
+
                         with col_actions:
                             if st.button("🗑️", key=f"delete_{task.id}", help="削除"):
                                 delete_task(task.id)
                                 st.rerun()
-                        
+
                         if task.description:
                             st.markdown(f"<small>{task.description}</small>", unsafe_allow_html=True)
-                        
+
                         if task.labels:
                             labels_html = ''.join([f'<span class="label-tag">{label}</span>' for label in task.labels])
                             st.markdown(labels_html, unsafe_allow_html=True)
-                        
+
                         # 画像（クリックで拡大表示）
                         if task.attachments:
                             st.markdown("**📎 添付ファイル:**")
                             for attachment in task.attachments:
                                 if attachment['type'].startswith('image/'):
-                                    # サムネイルの表示とクリック処理
                                     if CLICKABLE_AVAILABLE:
+                                        # クリック可能なサムネイル（1枚のとき index 0、未クリックは -1）
                                         clicked = clickable_images(
                                             [attachment['data']],
                                             titles=[attachment['name']],
@@ -513,7 +505,7 @@ def main():
                                             open_image_modal(attachment)
                                             st.rerun()
                                     else:
-                                        # フォールバック: 小さく表示 + 拡大ボタン
+                                        # フォールバック: サムネイル + 拡大ボタン
                                         try:
                                             image_data = attachment['data'].split(',')[1]
                                             image_bytes = base64.b64decode(image_data)
@@ -524,7 +516,7 @@ def main():
                                         if st.button("🔍 拡大表示", key=f"view_{task.id}_{attachment['id']}"):
                                             open_image_modal(attachment)
                                             st.rerun()
-                        
+
                         st.markdown('</div>', unsafe_allow_html=True)
                         st.markdown("---")
 
@@ -537,6 +529,7 @@ def main():
             if st.button("閉じる", key="close_image_modal_btn"):
                 close_image_modal()
                 st.rerun()
+
 
 if __name__ == "__main__":
     main()
