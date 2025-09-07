@@ -6,15 +6,15 @@ from PIL import Image
 import io
 import uuid
 
-# 追加: オプション依存の読み込み（存在しなくても動作するフォールバックあり）
-# DnD（ドラッグ＆ドロップ）は streamlit-sortables を使用
+# 追加: オプション依存（なくても動く）
+# ドラッグ＆ドロップ: streamlit-sortables
 try:
     from streamlit_sortables import sort_items
     SORTABLE_AVAILABLE = True
 except Exception:
     SORTABLE_AVAILABLE = False
 
-# サムネイル画像のクリック対応（streamlit-extras）
+# サムネイル画像のクリック対応: streamlit-extras
 try:
     from streamlit_extras.clickable_images import clickable_images
     CLICKABLE_AVAILABLE = True
@@ -100,7 +100,7 @@ class Task:
         self.date = date  # "YYYY-MM-DD"
         self.priority = priority  # low/medium/high
         self.labels = labels or []
-        self.attachments = attachments or []  # 画像などの添付（base64データURI）
+        self.attachments = attachments or []  # base64データURI
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
 
@@ -280,21 +280,23 @@ def render_dnd_board(week_dates):
         containers,
         multi_containers=True,
         direction="horizontal",
-        container_style={
-            "minHeight": "220px",
-            "backgroundColor": "#f8fafc",
-            "border": "2px dashed #e2e8f0",
-            "borderRadius": "8px",
-            "padding": "8px",
-            "margin": "6px",
-        },
-        item_style={
-            "padding": "6px 10px",
-            "margin": "4px 0",
-            "backgroundColor": "white",
-            "border": "1px solid #e2e8f0",
-            "borderRadius": "8px",
-            "cursor": "grab",
+        styles={
+            "container": {
+                "minHeight": "220px",
+                "backgroundColor": "#f8fafc",
+                "border": "2px dashed #e2e8f0",
+                "borderRadius": "8px",
+                "padding": "8px",
+                "margin": "6px",
+            },
+            "item": {
+                "padding": "6px 10px",
+                "margin": "4px 0",
+                "backgroundColor": "white",
+                "border": "1px solid #e2e8f0",
+                "borderRadius": "8px",
+                "cursor": "grab",
+            },
         },
         key="dnd_board",
     )
@@ -303,7 +305,10 @@ def render_dnd_board(week_dates):
     id_to_new_date = {}
     for ds, items in new_containers.items():
         for item in items:
-            tid = item["id"] if isinstance(item, dict) else item
+            if isinstance(item, dict) and "id" in item:
+                tid = item["id"]
+            else:
+                tid = str(item)
             id_to_new_date[tid] = ds
 
     changed = False
@@ -483,7 +488,6 @@ def main():
                             for attachment in task.attachments:
                                 if attachment['type'].startswith('image/'):
                                     if CLICKABLE_AVAILABLE:
-                                        # クリック可能なサムネイル（1枚のとき index 0、未クリックは -1）
                                         clicked = clickable_images(
                                             [attachment['data']],
                                             titles=[attachment['name']],
