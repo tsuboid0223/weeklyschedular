@@ -34,7 +34,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# カスタムCSS（見やすさ調整）
+# カスタムCSS（見やすさ・レイアウト安定）
 st.markdown("""
 <style>
     :root { --fg:#1f2937; --muted:#6b7280; --border:#e5e7eb; --bg:#f8fafc; }
@@ -72,7 +72,12 @@ st.markdown("""
         border-radius: 9999px; font-size: 0.72rem; margin: 2px 4px 0 0;
     }
 
-    .dnd-note { color: var(--muted); font-size: 0.86rem; margin-top: .3rem; }
+    /* カード上のアクションボタンの位置調整 */
+    .card-actions { text-align: right; margin-top: -6px; }
+    .action-btn { font-size: 0.95rem; margin-left: 4px; }
+
+    /* 余計なプレーンテキストが段組みに重ならないようにする */
+    .stMarkdown p { margin: 0.2rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -104,32 +109,45 @@ class Task:
         self.date = date  # "YYYY-MM-DD"
         self.priority = priority  # low/medium/high
         self.labels = labels or []
-        self.attachments = attachments or []  # base64データURI
+        self.attachments = attachments or []  # base64データURIの添付
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
 
     def to_dict(self):
         return {
-            'id': self.id, 'title': self.title, 'description': self.description, 'date': self.date,
-            'priority': self.priority, 'labels': self.labels, 'attachments': self.attachments,
-            'created_at': self.created_at.isoformat(), 'updated_at': self.updated_at.isoformat()
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'date': self.date,
+            'priority': self.priority,
+            'labels': self.labels,
+            'attachments': self.attachments,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat()
         }
 
     @classmethod
     def from_dict(cls, data):
-        t = cls(
-            id=data['id'], title=data['title'], description=data['description'], date=data['date'],
-            priority=data['priority'], labels=data.get('labels', []), attachments=data.get('attachments', [])
+        task = cls(
+            id=data['id'],
+            title=data['title'],
+            description=data['description'],
+            date=data['date'],
+            priority=data['priority'],
+            labels=data.get('labels', []),
+            attachments=data.get('attachments', [])
         )
         try:
-            t.created_at = datetime.fromisoformat(data.get('created_at', ''))
+            if data.get('created_at'):
+                task.created_at = datetime.fromisoformat(data['created_at'])
         except Exception:
-            t.created_at = datetime.now()
+            task.created_at = datetime.now()
         try:
-            t.updated_at = datetime.fromisoformat(data.get('updated_at', ''))
+            if data.get('updated_at'):
+                task.updated_at = datetime.fromisoformat(data['updated_at'])
         except Exception:
-            t.updated_at = datetime.now()
-        return t
+            task.updated_at = datetime.now()
+        return task
 
 # セッション状態（初回のみディスクからロード）
 if 'initialized' not in st.session_state:
@@ -137,6 +155,7 @@ if 'initialized' not in st.session_state:
     st.session_state.current_week = datetime.now().date()
     st.session_state.image_modal_open = False
     st.session_state.image_modal = None
+    st.session_state.edit_task_id = None
     st.session_state.initialized = True
 
 # ユーティリティ
@@ -168,8 +187,13 @@ def process_uploaded_image(uploaded_file):
     if uploaded_file is not None:
         data = uploaded_file.read()
         b64 = base64.b64encode(data).decode()
-        return {'id': str(uuid.uuid4()), 'name': uploaded_file.name, 'type': uploaded_file.type,
-                'size': len(data), 'data': f"data:{uploaded_file.type};base64,{b64}"}
+        return {
+            'id': str(uuid.uuid4()),
+            'name': uploaded_file.name,
+            'type': uploaded_file.type,
+            'size': len(data),
+            'data': f"data:{uploaded_file.type};base64,{b64}"
+        }
     return None
 
 # HTMLダッシュボード
@@ -246,6 +270,7 @@ def render_dnd_board(week_dates):
     if not SORTABLE_AVAILABLE:
         st.info("ドラッグ＆ドロップを使うには requirements.txt に 'streamlit-sortables' を追加してください。")
         return
+
     st.markdown("#### 🧲 ドラッグ＆ドロップでタスクを曜日移動")
 
     date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
@@ -258,6 +283,7 @@ def render_dnd_board(week_dates):
         items = [f"{t.title} [id:{short_ids[t.id]}]" for t in get_tasks_for_date(ds)]
         containers_payload.append({"header": f"{format_date_jp(d)}（{len(items)}）", "items": items})
 
+    # 週ごと＋内容ごとにkeyを変えて状態を更新
     dnd_key = f"dnd_board_{date_keys[0]}_{week_signature(week_dates)}"
     kwargs = {"multi_containers": True, "direction": "horizontal", "key": dnd_key}
     try:
@@ -277,6 +303,7 @@ def render_dnd_board(week_dates):
 
     new_containers = sort_items(containers_payload, **kwargs)
 
+    # [id:xxxx] を抽出して ID→日付に変換
     id_to_new_date, pattern = {}, re.compile(r"\[id:([0-9a-fA-F]+)\]\s*$")
     for idx, cont in enumerate(new_containers):
         ds = date_keys[idx] if idx < len(date_keys) else None
@@ -302,10 +329,8 @@ def render_dnd_board(week_dates):
         persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
         st.success("タスクの日付を更新しました。")
         st.rerun()
-    else:
-        st.caption("ドラッグして放すと自動反映。ヘッダーの（数）は各曜日のタスク数です。")
 
-# モーダル制御
+# モーダル制御（画像拡大）
 def open_image_modal(attachment):
     st.session_state.image_modal = attachment
     st.session_state.image_modal_open = True
@@ -313,6 +338,58 @@ def open_image_modal(attachment):
 def close_image_modal():
     st.session_state.image_modal = None
     st.session_state.image_modal_open = False
+
+# 編集モーダル
+def open_edit_modal(task_id: str):
+    st.session_state.edit_task_id = task_id
+
+def close_edit_modal():
+    st.session_state.edit_task_id = None
+
+def render_edit_modal():
+    tid = st.session_state.edit_task_id
+    if not tid:
+        return
+    task = next((t for t in st.session_state.tasks if t.id == tid), None)
+    if not task:
+        close_edit_modal()
+        return
+    with st.modal("タスクを編集", key=f"edit_modal_{tid}"):
+        with st.form(f"edit_form_{tid}"):
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                new_title = st.text_input("タスクタイトル *", value=task.title)
+                new_desc = st.text_area("説明", value=task.description)
+            with col2:
+                new_date = st.date_input("日付", value=datetime.strptime(task.date, "%Y-%m-%d").date() if task.date else datetime.now().date())
+                new_pri = st.selectbox("優先度", ["low", "medium", "high"], index=["low","medium","high"].index(task.priority if task.priority in ["low","medium","high"] else "medium"))
+                new_labels_str = st.text_input("ラベル (カンマ区切り)", value=",".join(task.labels))
+                clear_attachments = st.checkbox("既存の添付を全削除", value=False)
+            st.markdown("新しい画像を追加（任意）")
+            new_upload = st.file_uploader("画像を追加", type=['png', 'jpg', 'jpeg', 'gif'], key=f"edit_upload_{tid}")
+            submitted = st.form_submit_button("保存")
+        cancel = st.button("キャンセル", key=f"cancel_edit_{tid}")
+
+        if cancel:
+            close_edit_modal()
+            st.rerun()
+
+        if submitted:
+            task.title = new_title.strip() or task.title
+            task.description = new_desc
+            task.date = new_date.strftime("%Y-%m-%d")
+            task.priority = new_pri
+            task.labels = [s.strip() for s in new_labels_str.split(",") if s.strip()]
+            if clear_attachments:
+                task.attachments = []
+            if new_upload:
+                att = process_uploaded_image(new_upload)
+                if att:
+                    task.attachments.append(att)
+            save_task(task)
+            close_edit_modal()
+            st.success("タスクを更新しました。")
+            st.rerun()
 
 # メインアプリ
 def main():
@@ -336,9 +413,9 @@ def main():
             st.download_button("📥 JSONダウンロード", data=data, file_name=f"tasks_{datetime.now().strftime('%Y%m%d')}.json", mime="application/json")
 
         st.subheader("🖼️ HTMLダッシュボード")
-        week_dates = get_week_dates(st.session_state.current_week)
-        html_data = generate_week_html(week_dates)
-        st.download_button("📤 HTMLダウンロード", data=html_data, file_name=f"tasks_dashboard_{week_dates[0].strftime('%Y%m%d')}_{week_dates[6].strftime('%Y%m%d')}.html", mime="text/html")
+        week_dates_sb = get_week_dates(st.session_state.current_week)
+        html_data = generate_week_html(week_dates_sb)
+        st.download_button("📤 HTMLダウンロード", data=html_data, file_name=f"tasks_dashboard_{week_dates_sb[0].strftime('%Y%m%d')}_{week_dates_sb[6].strftime('%Y%m%d')}.html", mime="text/html")
 
         st.subheader("危険な操作")
         if st.button("🗑️ 全データクリア", type="secondary"):
@@ -352,8 +429,8 @@ def main():
     ws, we = week_dates[0].strftime("%Y/%m/%d"), week_dates[6].strftime("%Y/%m/%d")
     st.markdown(f'<div class="week-header"><h2>📅 {ws} - {we}</h2></div>', unsafe_allow_html=True)
 
-    # D&Dモード
-    with st.expander("🧲 ドラッグ＆ドロップで曜日を移動（週内タスク）", expanded=False):
+    # D&Dモード（余計なデバッグ文字が出ないよう表示は最小限）
+    with st.expander("🧲 ドラッグ＆ドロップでタスクを曜日移動（週内タスク）", expanded=False):
         if SORTABLE_AVAILABLE:
             render_dnd_board(week_dates)
         else:
@@ -371,17 +448,22 @@ def main():
                 priority = st.selectbox("優先度", ["low", "medium", "high"], index=1)
                 labels_input = st.text_input("ラベル (カンマ区切り)", placeholder="会議,重要")
             uploaded_file = st.file_uploader("画像を添付", type=['png', 'jpg', 'jpeg', 'gif'])
-
             submitted = st.form_submit_button("💾 タスクを保存")
-            if submitted and title:
+
+            if submitted and title.strip():
                 labels = [s.strip() for s in labels_input.split(',') if s.strip()]
                 attachments = []
                 if uploaded_file:
                     att = process_uploaded_image(uploaded_file)
-                    if att: attachments.append(att)
+                    if att:
+                        attachments.append(att)
                 save_task(Task(
-                    title=title, description=description, date=task_date.strftime("%Y-%m-%d"),
-                    priority=priority, labels=labels, attachments=attachments
+                    title=title.strip(),
+                    description=description,
+                    date=task_date.strftime("%Y-%m-%d"),
+                    priority=priority,
+                    labels=labels,
+                    attachments=attachments
                 ))
                 st.success(f"✅ タスク「{title}」を作成しました！")
                 st.rerun()
@@ -408,15 +490,24 @@ def main():
                         badge_cls = f"priority-badge priority-{task.priority}"
                         st.markdown(f'<div class="task-card {pcls}">', unsafe_allow_html=True)
 
-                        c1, c2 = st.columns([4, 1])
+                        # タイトルとアクション
+                        c1, c2 = st.columns([5, 1])
                         with c1:
                             st.markdown(f'<div class="task-title">{task.title}</div>', unsafe_allow_html=True)
                             if task.priority != 'medium':
                                 ptxt = {'high': '高', 'medium': '中', 'low': '低'}[task.priority]
                                 st.markdown(f'<span class="{badge_cls}">{ptxt}</span>', unsafe_allow_html=True)
                         with c2:
-                            if st.button("🗑️", key=f"delete_{task.id}", help="削除"):
-                                delete_task(task.id); st.rerun()
+                            # 編集（鉛筆）と削除（ごみ箱）
+                            ec, dc = st.columns(2)
+                            with ec:
+                                if st.button("✏️", key=f"edit_{task.id}", help="編集", use_container_width=True):
+                                    open_edit_modal(task.id)
+                                    st.rerun()
+                            with dc:
+                                if st.button("🗑️", key=f"delete_{task.id}", help="削除", use_container_width=True):
+                                    delete_task(task.id)
+                                    st.rerun()
 
                         if task.description:
                             st.markdown(f'<div class="desc">{task.description}</div>', unsafe_allow_html=True)
@@ -424,6 +515,7 @@ def main():
                         if task.labels:
                             st.markdown(''.join([f'<span class="label-tag">{lb}</span>' for lb in task.labels]), unsafe_allow_html=True)
 
+                        # 画像（クリックで拡大表示）
                         if task.attachments:
                             st.markdown("**📎 添付ファイル:**")
                             for att in task.attachments:
@@ -436,8 +528,7 @@ def main():
                                             key=f"thumb_{task.id}_{att['id']}"
                                         )
                                         if clicked == 0:
-                                            st.session_state.image_modal = att
-                                            st.session_state.image_modal_open = True
+                                            open_image_modal(att)
                                             st.rerun()
                                     else:
                                         try:
@@ -447,20 +538,21 @@ def main():
                                         except Exception as e:
                                             st.error(f"画像の表示エラー: {str(e)}")
                                         if st.button("🔍 拡大表示", key=f"view_{task.id}_{att['id']}"):
-                                            st.session_state.image_modal = att
-                                            st.session_state.image_modal_open = True
+                                            open_image_modal(att)
                                             st.rerun()
 
                         st.markdown('</div>', unsafe_allow_html=True)  # .task-card
 
-    # モーダル（拡大画像）
+    # 編集モーダル（必要なら表示）
+    render_edit_modal()
+
+    # 画像プレビューモーダル
     if st.session_state.image_modal_open and st.session_state.image_modal:
         with st.modal("画像プレビュー", key="image_modal"):
             att = st.session_state.image_modal
             st.image(att['data'], caption=att.get('name', ''), use_column_width=True)
             if st.button("閉じる", key="close_image_modal_btn"):
-                st.session_state.image_modal_open = False
-                st.session_state.image_modal = None
+                close_image_modal()
                 st.rerun()
 
 if __name__ == "__main__":
