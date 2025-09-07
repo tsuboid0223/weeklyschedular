@@ -34,7 +34,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# CSS（曜日ヘッダを上、追加ボタン直下、カードがその下。D&Dボードも固定表示）
+# CSS（曜日ヘッダ上/追加ボタン直下/カードすぐ下、D&Dは横スクロールで必ず見える）
 st.markdown(
     """
 <style>
@@ -83,8 +83,9 @@ st.markdown(
 .desc { font-size: 0.88rem; color:#374151; line-height: 1.45; margin-top: 0.2rem; }
 .label-tag { display:inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 9999px; font-size: 0.72rem; margin: 2px 4px 0 0; }
 
-/* D&Dボードの見た目 */
+/* D&Dボード（横スクロール可能にして小画面でも必ず見える） */
 .dnd-wrapper { border:1px solid var(--border); border-radius:12px; padding: .6rem .8rem; background:#fff; }
+.dnd-scroll { overflow-x:auto; overflow-y:hidden; white-space: nowrap; }
 .dnd-caption { color: var(--muted); font-size: .85rem; margin-top: .25rem; }
 </style>
 """,
@@ -301,33 +302,41 @@ def modal_or_expander(title: str, key: str):
             yield
 
 
-# D&Dボード（keyを「週開始日」で安定化）
+# D&Dボード（横スクロールで小画面でも確実に見える／keyは週開始日で安定化）
 def render_dnd_board(week_dates):
     if not SORTABLE_AVAILABLE:
         st.info("この機能を使うには requirements.txt に 'streamlit-sortables' を追加してください。")
         return
 
-    st.markdown('<div class="dnd-wrapper">', unsafe_allow_html=True)
+    # 横スクロールのラッパ
+    st.markdown('<div class="dnd-wrapper"><div class="dnd-scroll">', unsafe_allow_html=True)
 
     date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
     week_key = date_keys[0]  # 週開始日
 
-    # コンテナ配列（各曜日1コンテナ、itemsは文字列配列）
+    # 各曜日のリスト（itemsは文字列配列）
     containers_payload = []
     for ds, d in zip(date_keys, week_dates):
         items = [f"{t.title} [id:{t.id[:8]}]" for t in get_tasks_for_date(ds)]
+        # ヘッダにタスク数を表示
         containers_payload.append({"header": f"{format_date_jp(d)}（{len(items)}）", "items": items})
 
+    # スタイル設定：各コンテナを「inline-block + 固定幅」にして横並び、横スクロール可能に
+    CONTAINER_WIDTH = 220  # px
     kwargs = {
         "multi_containers": True,
         "direction": "horizontal",
-        "key": f"dnd_{week_key}",
+        "key": f"dnd_{week_key}",  # 安定キー
     }
     try:
         params = inspect.signature(sort_items).parameters
         if "styles" in params:
             kwargs["styles"] = {
                 "container": {
+                    "display": "inline-block",
+                    "verticalAlign": "top",
+                    "width": f"{CONTAINER_WIDTH}px",
+                    "minWidth": f"{CONTAINER_WIDTH}px",
                     "minHeight": "160px",
                     "backgroundColor": "#f8fafc",
                     "border": "2px dashed #e2e8f0",
@@ -342,10 +351,15 @@ def render_dnd_board(week_dates):
                     "border": "1px solid #e5e7eb",
                     "borderRadius": "8px",
                     "cursor": "grab",
+                    "whiteSpace": "normal",
                 },
             }
         elif "container_style" in params and "item_style" in params:
             kwargs["container_style"] = {
+                "display": "inline-block",
+                "verticalAlign": "top",
+                "width": f"{CONTAINER_WIDTH}px",
+                "minWidth": f"{CONTAINER_WIDTH}px",
                 "minHeight": "160px",
                 "backgroundColor": "#f8fafc",
                 "border": "2px dashed #e2e8f0",
@@ -360,6 +374,7 @@ def render_dnd_board(week_dates):
                 "border": "1px solid #e5e7eb",
                 "borderRadius": "8px",
                 "cursor": "grab",
+                "whiteSpace": "normal",
             }
     except Exception:
         pass
@@ -381,7 +396,7 @@ def render_dnd_board(week_dates):
             if not m:
                 continue
             short = m.group(1)
-            # フルIDが分からない場合のため、先頭8桁で一致するタスクにマップ
+            # 先頭8桁でIDを解決
             for t in st.session_state.tasks:
                 if t.id.startswith(short):
                     id_to_new_date[t.id] = ds
@@ -400,8 +415,7 @@ def render_dnd_board(week_dates):
         st.success("タスクの日付を更新しました。")
         st.rerun()
 
-    st.markdown('<div class="dnd-caption">カードを別曜日へドラッグ＆ドロップすると自動で反映されます。</div>', unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('</div><div class="dnd-caption">横にスクロールできます。カードを別曜日へドラッグ＆ドロップすると自動で反映されます。</div></div>', unsafe_allow_html=True)
 
 
 # 画像プレビュー
@@ -619,7 +633,7 @@ def main():
         if st.button("次の週 ➡"):
             goto_next_week()
 
-    # D&Dモード（常時展開）
+    # D&Dモード（常時展開・横スクロール対応）
     with st.expander("🧲 ドラッグ＆ドロップでタスクを曜日移動（週内）", expanded=True):
         if SORTABLE_AVAILABLE:
             render_dnd_board(week_dates)
