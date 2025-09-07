@@ -35,7 +35,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# CSS（曜日カードのデザイン含む）
+# CSS（曜日ヘッダを上部、ボタン・カードを直下に表示）
 st.markdown(
     """
 <style>
@@ -47,21 +47,29 @@ st.markdown(
 }
 .week-header h2 { margin:0; font-size: 1.1rem; font-weight:700; letter-spacing: 0.3px; }
 
-/* 曜日カード */
-.day-card { border:1px solid var(--border); border-radius: 12px; overflow:hidden; box-shadow: 0 2px 6px rgba(0,0,0,0.06); margin-bottom: .75rem; }
-.dc-head { display:flex; justify-content:space-between; align-items:center; padding:.55rem .8rem; color:#fff; font-weight:700; }
+/* 曜日ヘッダ（上部に固定表示） */
+.dc-head { display:flex; justify-content:space-between; align-items:center; padding:.55rem .8rem; color:#fff; font-weight:700; border-radius:10px; }
 .dc-name { font-size:.98rem; letter-spacing:.3px; }
 .dc-date { font-size:.9rem; opacity:.9; }
-.dc-body { background:#ffffff; min-height: 360px; padding: .6rem .8rem; }
 
-/* 曜日ごとのカラー */
-.day-0 .dc-head { background: linear-gradient(135deg,#60a5fa,#3b82f6); } /* 月 */
-.day-1 .dc-head { background: linear-gradient(135deg,#34d399,#10b981); } /* 火 */
-.day-2 .dc-head { background: linear-gradient(135deg,#fbbf24,#f59e0b); } /* 水 */
-.day-3 .dc-head { background: linear-gradient(135deg,#f472b6,#ec4899); } /* 木 */
-.day-4 .dc-head { background: linear-gradient(135deg,#a78bfa,#8b5cf6); } /* 金 */
-.day-5 .dc-head { background: linear-gradient(135deg,#fca5a5,#ef4444); } /* 土 */
-.day-6 .dc-head { background: linear-gradient(135deg,#5eead4,#14b8a6); } /* 日 */
+/* 曜日カラー */
+.day-head-0 { background: linear-gradient(135deg,#60a5fa,#3b82f6); } /* 月 */
+.day-head-1 { background: linear-gradient(135deg,#34d399,#10b981); } /* 火 */
+.day-head-2 { background: linear-gradient(135deg,#fbbf24,#f59e0b); } /* 水 */
+.day-head-3 { background: linear-gradient(135deg,#f472b6,#ec4899); } /* 木 */
+.day-head-4 { background: linear-gradient(135deg,#a78bfa,#8b5cf6); } /* 金 */
+.day-head-5 { background: linear-gradient(135deg,#fca5a5,#ef4444); } /* 土 */
+.day-head-6 { background: linear-gradient(135deg,#5eead4,#14b8a6); } /* 日 */
+
+/* カラム内ボディ（Streamlitのコンテナで囲む） */
+.body-box .st-emotion-cache-ue6h4q { padding: 0 !important; } /* Streamlitの枠内余白調整（将来変わる可能性あり） */
+
+/* 追加ボタン */
+.add-btn .stButton>button {
+  width: 100%; padding: .45rem .75rem; border-radius: 9999px;
+  border: 1px solid var(--border); background:#ffffff; color:#374151; font-weight:700;
+}
+.add-btn .stButton>button:hover { background:#f3f4f6; }
 
 /* タスクカード */
 .task-card {
@@ -83,7 +91,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 永続化（同一デプロイ中のリロードでも保持）
+# 永続化
 DATA_FILE = Path("tasks_store.json")
 _PERSIST_LOCK = threading.Lock()
 
@@ -323,7 +331,7 @@ def render_dnd_board(week_dates):
         st.info("ドラッグ＆ドロップを使うには requirements.txt に 'streamlit-sortables' を追加してください。")
         return
 
-    st.markdown("#### 🧲 ドラッグ＆ドロップでタスクを曜日移動")
+    st.markdown("#### 🧲 ドラッグ＆ドロップでタスクを曜日移動（週内）")
 
     date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
     all_week_tasks = [t for ds in date_keys for t in get_tasks_for_date(ds)]
@@ -594,11 +602,11 @@ def main():
         week_dates_sb = get_week_dates(st.session_state.current_week)
         html_data = generate_week_html(week_dates_sb)
         st.download_button(
-            "📤 HTMLダウンロード",
-            data=html_data,
-            file_name=f"tasks_dashboard_{week_dates_sb[0].strftime('%Y%m%d')}_{week_dates_sb[6].strftime('%Y%m%d')}.html",
-            mime="text/html",
-        )
+                "📤 HTMLダウンロード",
+                data=html_data,
+                file_name=f"tasks_dashboard_{week_dates_sb[0].strftime('%Y%m%d')}_{week_dates_sb[6].strftime('%Y%m%d')}.html",
+                mime="text/html",
+            )
 
         st.subheader("危険な操作")
         if st.button("🗑️ 全データクリア", type="secondary"):
@@ -631,98 +639,104 @@ def main():
         else:
             st.info("この機能を使うには requirements.txt に 'streamlit-sortables' を追加してください。")
 
-    # 週間ビュー
+    # 週間ビュー（各カラムの上から：ヘッダ → 追加ボタン → タスクリスト）
     cols = st.columns(7)
     weekdays = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
 
     for i, (date, col, weekday) in enumerate(zip(week_dates, cols, weekdays)):
         ds = date.strftime("%Y-%m-%d")
         with col:
+            # 曜日ヘッダ（最上部）
             st.markdown(
-                f'<div class="day-card day-{i}">'
-                f'  <div class="dc-head"><div class="dc-name">{weekday}</div>'
-                f'  <div class="dc-date">{format_date_jp(date)}</div></div>'
-                f'  <div class="dc-body">',
+                f'<div class="dc-head day-head-{i}">'
+                f'  <div class="dc-name">{weekday}</div>'
+                f'  <div class="dc-date">{format_date_jp(date)}</div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
 
-            # 追加ボタン（上部）
-            add_left, add_center, add_right = st.columns([1, 1, 1])
-            with add_right:
-                if st.button("＋ タスク追加", key=f"add_{ds}"):
+            # ボディ枠（ここに「＋追加」→タスクリストを直下に）
+            body = st.container()
+            with body:
+                st.markdown('<div class="body-box">', unsafe_allow_html=True)
+
+                # 追加ボタン（直上・フル幅）
+                st.markdown('<div class="add-btn">', unsafe_allow_html=True)
+                if st.button("＋ タスク追加", key=f"add_{ds}", use_container_width=True):
                     open_new_task_modal(ds)
                     st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            # 当日タスク（作成日時の降順＝新しいものが上）
-            day_tasks = sorted(get_tasks_for_date(ds), key=lambda t: t.created_at, reverse=True)
-            if not day_tasks:
-                st.caption("タスクなし")
-            else:
-                for task in day_tasks:
-                    pcls = f"{task.priority}"
-                    badge_cls = f"priority-badge priority-{task.priority}"
-                    st.markdown(f'<div class="task-card {pcls}">', unsafe_allow_html=True)
+                # タスクリスト（新しい順＝作成日時降順）
+                day_tasks = sorted(get_tasks_for_date(ds), key=lambda t: t.created_at, reverse=True)
+                if not day_tasks:
+                    st.caption("タスクなし")
+                else:
+                    for task in day_tasks:
+                        pcls = f"{task.priority}"
+                        badge_cls = f"priority-badge priority-{task.priority}"
+                        st.markdown(f'<div class="task-card {pcls}">', unsafe_allow_html=True)
 
-                    c1, c2 = st.columns([5, 1])
-                    with c1:
-                        st.markdown(f'<div class="task-title">{task.title}</div>', unsafe_allow_html=True)
-                        if task.priority != "medium":
-                            ptxt = {"high": "高", "medium": "中", "low": "低"}[task.priority]
-                            st.markdown(f'<span class="{badge_cls}">{ptxt}</span>', unsafe_allow_html=True)
-                    with c2:
-                        ec, dc = st.columns(2)
-                        with ec:
-                            if st.button("✏️", key=f"edit_{task.id}", help="編集"):
-                                open_edit_modal(task.id)
-                                st.rerun()
-                        with dc:
-                            if st.button("🗑️", key=f"delete_{task.id}", help="削除"):
-                                delete_task(task.id)
-                                st.rerun()
+                        c1, c2 = st.columns([5, 1])
+                        with c1:
+                            st.markdown(f'<div class="task-title">{task.title}</div>', unsafe_allow_html=True)
+                            if task.priority != "medium":
+                                ptxt = {"high": "高", "medium": "中", "low": "低"}[task.priority]
+                                st.markdown(f'<span class="{badge_cls}">{ptxt}</span>', unsafe_allow_html=True)
+                        with c2:
+                            ec, dc = st.columns(2)
+                            with ec:
+                                if st.button("✏️", key=f"edit_{task.id}", help="編集"):
+                                    open_edit_modal(task.id)
+                                    st.rerun()
+                            with dc:
+                                if st.button("🗑️", key=f"delete_{task.id}", help="削除"):
+                                    delete_task(task.id)
+                                    st.rerun()
 
-                    if task.description:
-                        st.markdown(f'<div class="desc">{task.description}</div>', unsafe_allow_html=True)
+                        if task.description:
+                            st.markdown(f'<div class="desc">{task.description}</div>', unsafe_allow_html=True)
 
-                    if task.labels:
-                        st.markdown(
-                            "".join([f'<span class="label-tag">{lb}</span>' for lb in task.labels]),
-                            unsafe_allow_html=True,
-                        )
+                        if task.labels:
+                            st.markdown(
+                                "".join([f'<span class="label-tag">{lb}</span>' for lb in task.labels]),
+                                unsafe_allow_html=True,
+                            )
 
-                    if task.attachments:
-                        st.markdown("**📎 添付ファイル:**")
-                        for att in task.attachments:
-                            if att["type"].startswith("image/"):
-                                if CLICKABLE_AVAILABLE:
-                                    clicked = clickable_images(
-                                        [att["data"]],
-                                        titles=[att["name"]],
-                                        div_style={"display": "inline-block", "padding": "2px"},
-                                        img_style={
-                                            "margin": "4px",
-                                            "height": "110px",
-                                            "border": "1px solid #e5e7eb",
-                                            "border-radius": "6px",
-                                        },
-                                        key=f"thumb_{task.id}_{att['id']}",
-                                    )
-                                    if clicked == 0:
-                                        open_image_modal(att)
-                                        st.rerun()
-                                else:
-                                    try:
-                                        b = base64.b64decode(att["data"].split(",")[1])
-                                        img = Image.open(io.BytesIO(b))
-                                        st.image(img, caption=att["name"], width=140)
-                                    except Exception as e:
-                                        st.error(f"画像の表示エラー: {str(e)}")
-                                    if st.button("🔍", key=f"view_{task.id}_{att['id']}", help="拡大表示"):
-                                        open_image_modal(att)
-                                        st.rerun()
+                        if task.attachments:
+                            st.markdown("**📎 添付ファイル:**")
+                            for att in task.attachments:
+                                if att["type"].startswith("image/"):
+                                    if CLICKABLE_AVAILABLE:
+                                        clicked = clickable_images(
+                                            [att["data"]],
+                                            titles=[att["name"]],
+                                            div_style={"display": "inline-block", "padding": "2px"},
+                                            img_style={
+                                                "margin": "4px",
+                                                "height": "110px",
+                                                "border": "1px solid #e5e7eb",
+                                                "border-radius": "6px",
+                                            },
+                                            key=f"thumb_{task.id}_{att['id']}",
+                                        )
+                                        if clicked == 0:
+                                            open_image_modal(att)
+                                            st.rerun()
+                                    else:
+                                        try:
+                                            b = base64.b64decode(att["data"].split(",")[1])
+                                            img = Image.open(io.BytesIO(b))
+                                            st.image(img, caption=att["name"], width=140)
+                                        except Exception as e:
+                                            st.error(f"画像の表示エラー: {str(e)}")
+                                        if st.button("🔍", key=f"view_{task.id}_{att['id']}", help="拡大表示"):
+                                            open_image_modal(att)
+                                            st.rerun()
 
-                    st.markdown("</div>", unsafe_allow_html=True)  # .task-card
+                        st.markdown("</div>", unsafe_allow_html=True)  # .task-card
 
-            st.markdown("  </div></div>", unsafe_allow_html=True)  # .dc-body / .day-card
+                st.markdown("</div>", unsafe_allow_html=True)  # .body-box
 
     # 編集モーダル
     render_edit_modal()
