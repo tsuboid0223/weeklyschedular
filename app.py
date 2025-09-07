@@ -236,7 +236,7 @@ def generate_week_html(week_dates):
         ds = date.strftime("%Y-%m-%d")
         tasks = get_tasks_for_date(ds)
         html.append('<div class="day">')
-        html.append(f'<div class="title">{weekdays_jp[i]}</div>')
+        html.append(f'<div class="title">{"月火水木金土日"[i%7]}曜日</div>')
         html.append(f'<div class="date">{format_date_jp(date)}</div>')
         if not tasks:
             html.append('<div style="font-size:12px;color:#6b7280;">タスクなし</div>')
@@ -269,12 +269,13 @@ def render_dnd_board(week_dates):
 
     st.markdown("#### 🧲 ドラッグ＆ドロップでタスクを曜日移動")
 
-    # 7日分のアイテムを準備（key: 日付文字列, value: アイテム配列）
+    # 並び替え対象のコンテナを「リスト形式」で作る（API要件）
     date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
-    containers = {}
-    for ds in date_keys:
+    containers_payload = []
+    for ds, d in zip(date_keys, week_dates):
         tasks = get_tasks_for_date(ds)
-        containers[ds] = [{"id": t.id, "content": t.title} for t in tasks]
+        items = [{"id": t.id, "content": t.title} for t in tasks]
+        containers_payload.append({"header": format_date_jp(d), "items": items})
 
     # バージョン差に対応した可変引数を用意
     kwargs = {"multi_containers": True, "direction": "horizontal", "key": "dnd_board"}
@@ -316,20 +317,26 @@ def render_dnd_board(week_dates):
                 "borderRadius": "8px",
                 "cursor": "grab",
             }
-        # さらに古い版はスタイル無指定のみ対応 → そのまま
     except Exception:
         pass
 
-    # 並び替えUIの実行
-    new_containers = sort_items(containers, **kwargs)
+    # 並び替え実行（返り値は「コンテナのリスト」想定）
+    new_containers = sort_items(containers_payload, **kwargs)
 
-    # 変更反映（タスクID -> 新しい日付）
+    # 返り値から「タスクID -> 新しい日付」を復元
     id_to_new_date = {}
-    for ds, items in new_containers.items():
-        for item in items:
+    # 返却順は入力順を維持する前提で date_keys を対応付け
+    for idx, cont in enumerate(new_containers):
+        ds = date_keys[idx] if idx < len(date_keys) else None
+        if ds is None:
+            continue
+        # cont が dict で items を持つ場合／単なるリストの場合の両方を吸収
+        items_list = cont.get("items") if isinstance(cont, dict) else (cont if isinstance(cont, list) else [])
+        for item in items_list:
             tid = item["id"] if isinstance(item, dict) and "id" in item else str(item)
             id_to_new_date[tid] = ds
 
+    # 変更反映
     changed = False
     for task in st.session_state.tasks:
         new_date = id_to_new_date.get(task.id)
