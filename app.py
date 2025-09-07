@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import json
 import base64
@@ -26,7 +25,6 @@ try:
     CLICKABLE_AVAILABLE = True
 except Exception:
     CLICKABLE_AVAILABLE = False
-
 
 # ページ設定
 st.set_page_config(
@@ -78,21 +76,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
 # 永続化（同一デプロイ中のリロードでも保持）
 DATA_FILE = Path("tasks_store.json")
 _PERSIST_LOCK = threading.Lock()
 
-
 def load_tasks_from_disk():
     if DATA_FILE.exists():
         try:
-            text = DATA_FILE.read_text(encoding="utf-8")
-            return json.loads(text)
+            return json.loads(DATA_FILE.read_text(encoding="utf-8"))
         except Exception:
             return []
     return []
-
 
 def persist_tasks_to_disk(task_dicts):
     try:
@@ -100,7 +94,6 @@ def persist_tasks_to_disk(task_dicts):
             DATA_FILE.write_text(json.dumps(task_dicts, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
-
 
 # データクラス
 class Task:
@@ -111,106 +104,75 @@ class Task:
         self.date = date  # "YYYY-MM-DD"
         self.priority = priority  # low/medium/high
         self.labels = labels or []
-        self.attachments = attachments or []  # base64データURIの添付
+        self.attachments = attachments or []  # base64データURI
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
 
     def to_dict(self):
         return {
-            'id': self.id,
-            'title': self.title,
-            'description': self.description,
-            'date': self.date,
-            'priority': self.priority,
-            'labels': self.labels,
-            'attachments': self.attachments,
-            'created_at': self.created_at.isoformat(),
-            'updated_at': self.updated_at.isoformat()
+            'id': self.id, 'title': self.title, 'description': self.description, 'date': self.date,
+            'priority': self.priority, 'labels': self.labels, 'attachments': self.attachments,
+            'created_at': self.created_at.isoformat(), 'updated_at': self.updated_at.isoformat()
         }
 
     @classmethod
     def from_dict(cls, data):
-        task = cls(
-            id=data['id'],
-            title=data['title'],
-            description=data['description'],
-            date=data['date'],
-            priority=data['priority'],
-            labels=data.get('labels', []),
-            attachments=data.get('attachments', [])
+        t = cls(
+            id=data['id'], title=data['title'], description=data['description'], date=data['date'],
+            priority=data['priority'], labels=data.get('labels', []), attachments=data.get('attachments', [])
         )
-        if 'created_at' in data:
-            try:
-                task.created_at = datetime.fromisoformat(data['created_at'])
-            except Exception:
-                task.created_at = datetime.now()
-        if 'updated_at' in data:
-            try:
-                task.updated_at = datetime.fromisoformat(data['updated_at'])
-            except Exception:
-                task.updated_at = datetime.now()
-        return task
+        try:
+            t.created_at = datetime.fromisoformat(data.get('created_at', ''))
+        except Exception:
+            t.created_at = datetime.now()
+        try:
+            t.updated_at = datetime.fromisoformat(data.get('updated_at', ''))
+        except Exception:
+            t.updated_at = datetime.now()
+        return t
 
-
-# セッション状態
+# セッション状態（初回のみディスクからロード）
 if 'initialized' not in st.session_state:
-    # 起動時にディスクから読み込む
-    loaded = load_tasks_from_disk()
-    st.session_state.tasks = [Task.from_dict(d) for d in loaded]
+    st.session_state.tasks = [Task.from_dict(d) for d in load_tasks_from_disk()]
     st.session_state.current_week = datetime.now().date()
     st.session_state.image_modal_open = False
     st.session_state.image_modal = None
     st.session_state.initialized = True
 
-
 # ユーティリティ
 def get_week_dates(start_date):
-    days_since_monday = start_date.weekday()
-    monday = start_date - timedelta(days=days_since_monday)
+    monday = start_date - timedelta(days=start_date.weekday())
     return [monday + timedelta(days=i) for i in range(7)]
-
 
 def format_date_jp(date):
     weekdays = ['月', '火', '水', '木', '金', '土', '日']
     return f"{date.month}/{date.day}({weekdays[date.weekday()]})"
 
-
 def get_tasks_for_date(date_str):
     return [task for task in st.session_state.tasks if task.date == date_str]
 
-
 def save_task(task):
-    existing_index = next((i for i, t in enumerate(st.session_state.tasks) if t.id == task.id), None)
+    idx = next((i for i, t in enumerate(st.session_state.tasks) if t.id == task.id), None)
     task.updated_at = datetime.now()
-    if existing_index is not None:
-        st.session_state.tasks[existing_index] = task
+    if idx is not None:
+        st.session_state.tasks[idx] = task
     else:
         st.session_state.tasks.append(task)
-    # 永続化
     persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
-
 
 def delete_task(task_id):
-    st.session_state.tasks = [task for task in st.session_state.tasks if task.id != task_id]
-    # 永続化
+    st.session_state.tasks = [t for t in st.session_state.tasks if t.id != task_id]
     persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
-
 
 def process_uploaded_image(uploaded_file):
     if uploaded_file is not None:
-        image_data = uploaded_file.read()
-        base64_data = base64.b64encode(image_data).decode()
-        return {
-            'id': str(uuid.uuid4()),
-            'name': uploaded_file.name,
-            'type': uploaded_file.type,
-            'size': len(image_data),
-            'data': f"data:{uploaded_file.type};base64,{base64_data}"
-        }
+        data = uploaded_file.read()
+        b64 = base64.b64encode(data).decode()
+        return {'id': str(uuid.uuid4()), 'name': uploaded_file.name, 'type': uploaded_file.type,
+                'size': len(data), 'data': f"data:{uploaded_file.type};base64,{b64}"}
     return None
 
-
-# HTMLダッシュボード（単一HTML）
+# HTMLダッシュボード
 def generate_week_html(week_dates):
     weekdays_jp = ['月曜日','火曜日','水曜日','木曜日','金曜日','土曜日','日曜日']
     css = """
@@ -247,113 +209,87 @@ def generate_week_html(week_dates):
             html.append('<div style="font-size:12px;color:#6b7280;">タスクなし</div>')
         else:
             for t in tasks:
-                pclass = t.priority
-                ptext = {'high':'高','medium':'中','low':'低'}[t.priority]
+                pclass = t.priority; ptext = {'high':'高','medium':'中','low':'低'}[t.priority]
                 html.append(f'<div class="task-card {pclass}">')
                 html.append(f'<div><strong>{t.title}</strong> <span class="priority-badge priority-{pclass}">{ptext}</span></div>')
-                if t.description:
-                    html.append(f'<div class="desc">{t.description}</div>')
+                if t.description: html.append(f'<div class="desc">{t.description}</div>')
                 if t.labels:
                     labels = ''.join([f'<span class="label">{lb}</span>' for lb in t.labels])
                     html.append(f'<div style="margin-top:4px;">{labels}</div>')
                 if t.attachments:
                     for att in t.attachments:
-                        if att['type'].startswith('image/'):
-                            html.append(f'<img class="thumb" src="{att["data"]}" alt="{att["name"]}"/>')
+                        if att['type'].startswith('image/'): html.append(f'<img class="thumb" src="{att["data"]}" alt="{att["name"]}"/>')
                 html.append('</div>')
         html.append('</div>')
     html.append('</div></div>')
     return ''.join(html)
 
-
-# D&D用: タスクIDの短縮表記
+# D&D用
 def build_short_ids(tasks):
-    used = set()
-    mapping = {}
+    used, mapping = set(), {}
     for t in tasks:
         base = t.id.replace('-', '')
         length = 6
         sid = base[:length]
         while sid in used and length < len(base):
-            length += 1
-            sid = base[:length]
-        used.add(sid)
-        mapping[t.id] = sid
+            length += 1; sid = base[:length]
+        used.add(sid); mapping[t.id] = sid
     return mapping
 
-
 def week_signature(week_dates):
-    """D&Dウィジェットのkeyに混ぜるため、週内タスクのハッシュを作る（更新を確実に反映）"""
     keys = {d.strftime("%Y-%m-%d") for d in week_dates}
     items = [(t.id, t.date, t.updated_at.isoformat()) for t in st.session_state.tasks if t.date in keys]
     items.sort()
-    s = json.dumps(items, ensure_ascii=False)
-    return hashlib.md5(s.encode("utf-8")).hexdigest()[:10]
+    return hashlib.md5(json.dumps(items, ensure_ascii=False).encode("utf-8")).hexdigest()[:10]
 
-
-# D&Dボード（streamlit-sortables、バージョン差/週切替に対応）
 def render_dnd_board(week_dates):
     if not SORTABLE_AVAILABLE:
         st.info("ドラッグ＆ドロップを使うには requirements.txt に 'streamlit-sortables' を追加してください。")
         return
-
     st.markdown("#### 🧲 ドラッグ＆ドロップでタスクを曜日移動")
 
     date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
-
-    # 週内タスクに短縮IDを割当
-    all_week_tasks = []
-    for ds in date_keys:
-        all_week_tasks.extend(get_tasks_for_date(ds))
+    all_week_tasks = [t for ds in date_keys for t in get_tasks_for_date(ds)]
     short_ids = build_short_ids(all_week_tasks)
     short_to_full = {v: k for k, v in short_ids.items()}
 
-    # コンテナのリスト（items は文字列配列）
     containers_payload = []
     for ds, d in zip(date_keys, week_dates):
         items = [f"{t.title} [id:{short_ids[t.id]}]" for t in get_tasks_for_date(ds)]
         containers_payload.append({"header": f"{format_date_jp(d)}（{len(items)}）", "items": items})
 
-    # 週ごと＋内容ごとにkeyを変えて、追加/削除も確実に反映
     dnd_key = f"dnd_board_{date_keys[0]}_{week_signature(week_dates)}"
-
-    # バージョン差に対応した可変引数
     kwargs = {"multi_containers": True, "direction": "horizontal", "key": dnd_key}
     try:
         params = inspect.signature(sort_items).parameters
         if "styles" in params:
-            kwargs["styles"] = {
-                "container": {"minHeight": "220px", "backgroundColor":"#f8fafc", "border":"2px dashed #e2e8f0", "borderRadius":"10px", "padding":"8px", "margin":"6px"},
-                "item": {"padding":"6px 10px", "margin":"4px 0", "backgroundColor":"#fff", "border":"1px solid #e5e7eb", "borderRadius":"8px", "cursor":"grab"},
-            }
+            kwargs["styles"] = {"container": {"minHeight": "220px", "backgroundColor":"#f8fafc", "border":"2px dashed #e2e8f0",
+                                              "borderRadius":"10px", "padding":"8px", "margin":"6px"},
+                                "item": {"padding":"6px 10px", "margin":"4px 0", "backgroundColor":"#fff",
+                                         "border":"1px solid #e5e7eb", "borderRadius":"8px", "cursor":"grab"}}
         elif "container_style" in params and "item_style" in params:
-            kwargs["container_style"] = {"minHeight": "220px", "backgroundColor":"#f8fafc", "border":"2px dashed #e2e8f0", "borderRadius":"10px", "padding":"8px", "margin":"6px"}
-            kwargs["item_style"] = {"padding":"6px 10px", "margin":"4px 0", "backgroundColor":"#fff", "border":"1px solid #e5e7eb", "borderRadius":"8px", "cursor":"grab"}
+            kwargs["container_style"] = {"minHeight": "220px", "backgroundColor":"#f8fafc", "border":"2px dashed #e2e8f0",
+                                         "borderRadius":"10px", "padding":"8px", "margin":"6px"}
+            kwargs["item_style"] = {"padding":"6px 10px", "margin":"4px 0", "backgroundColor":"#fff",
+                                    "border":"1px solid #e5e7eb", "borderRadius":"8px", "cursor":"grab"}
     except Exception:
         pass
 
-    # 並び替え実行
     new_containers = sort_items(containers_payload, **kwargs)
 
-    # 返り値から [id:xxxx] を抽出して ID→日付に変換
-    id_to_new_date = {}
-    pattern = re.compile(r"\[id:([0-9a-fA-F]+)\]\s*$")
+    id_to_new_date, pattern = {}, re.compile(r"\[id:([0-9a-fA-F]+)\]\s*$")
     for idx, cont in enumerate(new_containers):
         ds = date_keys[idx] if idx < len(date_keys) else None
-        if ds is None:
-            continue
+        if ds is None: continue
         items_list = cont.get("items") if isinstance(cont, dict) else (cont if isinstance(cont, list) else [])
         for label in items_list:
             s = label.get("content") if isinstance(label, dict) else str(label)
             m = pattern.search(s)
-            if not m:
-                continue
+            if not m: continue
             short = m.group(1)
             full = short_to_full.get(short)
-            if full:
-                id_to_new_date[full] = ds
+            if full: id_to_new_date[full] = ds
 
-    # 変更反映
     changed = False
     for task in st.session_state.tasks:
         new_date = id_to_new_date.get(task.id)
@@ -363,24 +299,20 @@ def render_dnd_board(week_dates):
             changed = True
 
     if changed:
-        # 永続化
         persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
         st.success("タスクの日付を更新しました。")
         st.rerun()
     else:
         st.caption("ドラッグして放すと自動反映。ヘッダーの（数）は各曜日のタスク数です。")
 
-
-# モーダル制御（画像拡大）
+# モーダル制御
 def open_image_modal(attachment):
     st.session_state.image_modal = attachment
     st.session_state.image_modal_open = True
 
-
 def close_image_modal():
     st.session_state.image_modal = None
     st.session_state.image_modal_open = False
-
 
 # メインアプリ
 def main():
@@ -446,15 +378,10 @@ def main():
                 attachments = []
                 if uploaded_file:
                     att = process_uploaded_image(uploaded_file)
-                    if att:
-                        attachments.append(att)
+                    if att: attachments.append(att)
                 save_task(Task(
-                    title=title,
-                    description=description,
-                    date=task_date.strftime("%Y-%m-%d"),
-                    priority=priority,
-                    labels=labels,
-                    attachments=attachments
+                    title=title, description=description, date=task_date.strftime("%Y-%m-%d"),
+                    priority=priority, labels=labels, attachments=attachments
                 ))
                 st.success(f"✅ タスク「{title}」を作成しました！")
                 st.rerun()
@@ -463,7 +390,7 @@ def main():
     cols = st.columns(7)
     weekdays = ['月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日', '日曜日']
 
-    for date, col, weekday in zip(week_dates, cols, weekdays)):
+    for date, col, weekday in zip(week_dates, cols, weekdays):
         with col:
             st.markdown(
                 f'<div class="day-head"><div class="day-name">{weekday}</div>'
@@ -489,8 +416,7 @@ def main():
                                 st.markdown(f'<span class="{badge_cls}">{ptxt}</span>', unsafe_allow_html=True)
                         with c2:
                             if st.button("🗑️", key=f"delete_{task.id}", help="削除"):
-                                delete_task(task.id)
-                                st.rerun()
+                                delete_task(task.id); st.rerun()
 
                         if task.description:
                             st.markdown(f'<div class="desc">{task.description}</div>', unsafe_allow_html=True)
@@ -498,7 +424,6 @@ def main():
                         if task.labels:
                             st.markdown(''.join([f'<span class="label-tag">{lb}</span>' for lb in task.labels]), unsafe_allow_html=True)
 
-                        # 画像（クリックで拡大表示）
                         if task.attachments:
                             st.markdown("**📎 添付ファイル:**")
                             for att in task.attachments:
@@ -511,7 +436,8 @@ def main():
                                             key=f"thumb_{task.id}_{att['id']}"
                                         )
                                         if clicked == 0:
-                                            open_image_modal(att)
+                                            st.session_state.image_modal = att
+                                            st.session_state.image_modal_open = True
                                             st.rerun()
                                     else:
                                         try:
@@ -521,7 +447,8 @@ def main():
                                         except Exception as e:
                                             st.error(f"画像の表示エラー: {str(e)}")
                                         if st.button("🔍 拡大表示", key=f"view_{task.id}_{att['id']}"):
-                                            open_image_modal(att)
+                                            st.session_state.image_modal = att
+                                            st.session_state.image_modal_open = True
                                             st.rerun()
 
                         st.markdown('</div>', unsafe_allow_html=True)  # .task-card
@@ -532,10 +459,9 @@ def main():
             att = st.session_state.image_modal
             st.image(att['data'], caption=att.get('name', ''), use_column_width=True)
             if st.button("閉じる", key="close_image_modal_btn"):
-                close_image_modal()
+                st.session_state.image_modal_open = False
+                st.session_state.image_modal = None
                 st.rerun()
-
 
 if __name__ == "__main__":
     main()
-```
