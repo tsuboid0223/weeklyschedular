@@ -61,7 +61,7 @@ def setup_gemini():
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
         genai.configure(api_key=api_key)
-        return genai.GenerativeModel('gemini-2.0-flash')
+        return genai.GenerativeModel('gemini-1.5-flash')
     except Exception as e:
         st.error(f"❌ Gemini API設定エラー: {str(e)}")
         return None
@@ -286,7 +286,21 @@ def fetch_page_with_browser(url, logger):
                 browser = p.chromium.connect_over_cdp(BROWSER_API_CONFIG['ws_endpoint'])
                 page = browser.contexts[0].new_page()
                 page.goto(clean_url_str, timeout=timeout_ms, wait_until=wait_type)
+                
+                # JavaScript動的レンダリングの待機（価格表示用）
+                time.sleep(3)  # 基本待機を3秒に延長
+                
+                # 価格要素の明示的な待機（最大5秒）
+                try:
+                    # 価格を含む要素が表示されるまで待機
+                    page.wait_for_selector('span:has-text("¥"), span:has-text("円"), span:has-text("$"), [class*="price"], [class*="Price"]', timeout=5000, state='visible')
+                    logger.log(f"  💰 価格要素を検出", "DEBUG")
+                except:
+                    logger.log(f"  ⚠️ 価格要素の明示的な待機タイムアウト（HTML取得は継続）", "DEBUG")
+                
+                # 追加の安全待機
                 time.sleep(2)
+                
                 html_content = page.content()
                 page.close()
                 browser.close()
@@ -725,6 +739,11 @@ def main():
         
         if table_data:
             df_display = pd.DataFrame(table_data)
+            # 列の順序を明示的に指定
+            column_order = ['製品名', '販売元', '型番', 'メーカー', 'リンク先', '容量', '価格', '在庫有無']
+            # 存在する列のみを選択
+            existing_columns = [col for col in column_order if col in df_display.columns]
+            df_display = df_display[existing_columns]
             st.dataframe(df_display, use_container_width=True, height=600)
         
         # CSV出力
