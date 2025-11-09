@@ -1,856 +1,751 @@
 import streamlit as st
-import requests
-import google.generativeai as genai
-import time
-import re
 import json
-import pandas as pd
-from io import StringIO
-from datetime import datetime
-from playwright.sync_api import sync_playwright
-import urllib.parse
-from urllib.parse import quote_plus
+import base64
+from datetime import datetime, timedelta
+from PIL import Image
+import io
+import uuid
+import inspect
+import re
+from pathlib import Path
+import threading
+from contextlib import contextmanager
+
+# 依存（未インストールでも動作継続）
+# ドラッグ＆ドロップ: streamlit-sortables（任意）
+try:
+    from streamlit_sortables import sort_items
+    SORTABLE_AVAILABLE = True
+except Exception:
+    SORTABLE_AVAILABLE = False
+
+# サムネイルクリック: streamlit-extras（任意）
+try:
+    from streamlit_extras.clickable_images import clickable_images
+    CLICKABLE_AVAILABLE = True
+except Exception:
+    CLICKABLE_AVAILABLE = False
 
 # ページ設定
 st.set_page_config(
-    page_title="化学試薬 価格比較システム（Browser API版）",
-    page_icon="🧪",
-    layout="wide"
+    page_title="週間タスクスケジューラー",
+    page_icon="📅",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# カスタムCSS
-st.markdown("""
+# CSS（曜日ヘッダ上/追加ボタン直下/カードすぐ下、D&Dは横スクロールで必ず見える）
+st.markdown(
+    """
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .api-status {
-        padding: 0.5rem 1rem;
-        border-radius: 0.3rem;
-        margin: 0.5rem 0;
-        font-weight: bold;
-    }
-    .api-success {
-        background-color: #d4edda;
-        color: #155724;
-        border: 1px solid #c3e6cb;
-    }
+:root { --fg:#1f2937; --muted:#6b7280; --border:#e5e7eb; --bg:#f8fafc; }
+.main-header { text-align:center; color:var(--fg); margin: 0 0 1.0rem 0; }
+.week-header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white; padding: 0.9rem 1.2rem; border-radius: 14px; text-align:center; margin-bottom: 0.5rem;
+}
+.week-header h2 { margin:0; font-size: 1.1rem; font-weight:700; letter-spacing: 0.3px; }
+
+/* 曜日ヘッダ（最上部） */
+.dc-head { display:flex; justify-content:space-between; align-items:center; padding:.55rem .8rem; color:#fff; font-weight:700; border-radius:10px; }
+.dc-name { font-size:.98rem; letter-spacing:.3px; }
+.dc-date { font-size:.9rem; opacity:.9; }
+
+/* 曜日カラー */
+.day-head-0 { background: linear-gradient(135deg,#60a5fa,#3b82f6); } /* 月 */
+.day-head-1 { background: linear-gradient(135deg,#34d399,#10b981); } /* 火 */
+.day-head-2 { background: linear-gradient(135deg,#fbbf24,#f59e0b); } /* 水 */
+.day-head-3 { background: linear-gradient(135deg,#f472b6,#ec4899); } /* 木 */
+.day-head-4 { background: linear-gradient(135deg,#a78bfa,#8b5cf6); } /* 金 */
+.day-head-5 { background: linear-gradient(135deg,#fca5a5,#ef4444); } /* 土 */
+.day-head-6 { background: linear-gradient(135deg,#5eead4,#14b8a6); } /* 日 */
+
+/* 追加ボタン（ヘッダ直下・フル幅） */
+.add-btn .stButton>button {
+  width: 100%; padding: .45rem .75rem; border-radius: 9999px;
+  border: 1px solid var(--border); background:#ffffff; color:#374151; font-weight:700;
+}
+.add-btn .stButton>button:hover { background:#f3f4f6; }
+
+/* タスクカード */
+.task-card {
+  background: #fff; border-radius: 10px; padding: 0.75rem 0.9rem; margin: 0.6rem 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #3b82f6;
+}
+.task-card.high { border-left-color: #ef4444; }
+.task-card.medium { border-left-color: #f59e0b; }
+.task-card.low { border-left-color: #10b981; }
+.task-title { font-weight: 700; font-size: 0.98rem; margin: 0 0 0.1rem 0; color:var(--fg); }
+.priority-badge { display:inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 0.72rem; font-weight: 700; margin-left: 6px; }
+.priority-high { background-color: #fecaca; color: #dc2626; }
+.priority-medium { background-color: #fed7aa; color: #ea580c; }
+.priority-low { background-color: #bbf7d0; color: #059669; }
+.desc { font-size: 0.88rem; color:#374151; line-height: 1.45; margin-top: 0.2rem; }
+.label-tag { display:inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 9999px; font-size: 0.72rem; margin: 2px 4px 0 0; }
+
+/* D&Dボード（横スクロール可能にして小画面でも必ず見える） */
+.dnd-wrapper { border:1px solid var(--border); border-radius:12px; padding: .6rem .8rem; background:#fff; }
+.dnd-scroll { overflow-x:auto; overflow-y:hidden; white-space: nowrap; }
+.dnd-caption { color: var(--muted); font-size: .85rem; margin-top: .25rem; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-# リアルタイムログクラス
-class RealTimeLogger:
-    def __init__(self, container):
-        self.container = container
-        self.logs = []
-        
-    def log(self, message, level="INFO"):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] [{level}] {message}"
-        self.logs.append(log_entry)
-        
-        with self.container:
-            st.code("\n".join(self.logs[-50:]), language="log")
+# 永続化
+DATA_FILE = Path("tasks_store.json")
+_PERSIST_LOCK = threading.Lock()
 
-# Gemini API設定
-def setup_gemini():
-    try:
-        api_key = st.secrets["GOOGLE_API_KEY"]
-        genai.configure(api_key=api_key)
-        # gemini-2.5-proに変更（最新モデル）
-        return genai.GenerativeModel('gemini-2.5-pro')
-    except Exception as e:
-        st.error(f"❌ Gemini API設定エラー: {str(e)}")
-        return None
 
-# SERP API設定（Google検索用）
-def check_serp_api_config():
-    try:
-        if "BRIGHTDATA_API_KEY" in st.secrets:
-            return {
-                'api_key': st.secrets["BRIGHTDATA_API_KEY"],
-                'zone_name': st.secrets.get("BRIGHTDATA_ZONE_NAME", "serp_api1"),
-                'available': True
-            }
-    except:
-        pass
-    return {'available': False}
-
-# Browser API設定（ページ取得用）
-BROWSER_API_CONFIG = {
-    'ws_endpoint': 'wss://brd-customer-hl_3c49a4bb-zone-scraping_browser1:lokq2uz6vn5q@brd.superproxy.io:9222',
-    'available': True
-}
-
-# 対象ECサイトの定義（11サイト）
-TARGET_SITES = {
-    "cosmobio": {"name": "コスモバイオ", "domain": "cosmobio.co.jp"},
-    "funakoshi": {"name": "フナコシ", "domain": "funakoshi.co.jp"},
-    "axel": {"name": "AXEL", "domain": "axel.as-1.co.jp"},
-    "selleck": {"name": "Selleck", "domain": "selleck.co.jp"},
-    "mce": {"name": "MCE", "domain": "medchemexpress.com"},
-    "nakarai": {"name": "ナカライ", "domain": "nacalai.co.jp"},
-    "fujifilm": {"name": "富士フイルム和光", "domain": "labchem-wako.fujifilm.com"},
-    "kanto": {"name": "関東化学", "domain": "kanto.co.jp"},
-    "tci": {"name": "TCI", "domain": "tcichemicals.com"},
-    "merck": {"name": "Merck", "domain": "merck.com"},
-    "wako": {"name": "和光純薬", "domain": "hpc-j.co.jp"}
-}
-
-def search_google_with_serp(query, serp_config, logger):
-    """SERP API経由でGoogle検索を実行"""
-    try:
-        logger.log(f"  🔍 SERP API経由でGoogle検索: {query[:60]}...", "DEBUG")
-        
-        api_url = "https://api.brightdata.com/request"
-        search_url = f"https://www.google.com/search?q={quote_plus(query)}&num=10&hl=ja&gl=jp"
-        
-        headers = {
-            'Authorization': f'Bearer {serp_config["api_key"]}',
-            'Content-Type': 'application/json'
-        }
-        
-        payload = {
-            'zone': serp_config['zone_name'],
-            'url': search_url,
-            'format': 'raw'
-        }
-        
-        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
-        
-        if response.status_code == 200:
-            logger.log(f"  ✅ Google検索成功 (HTML: {len(response.text)} chars)", "DEBUG")
-            return response.text
-        else:
-            logger.log(f"  ⚠️ SERP API HTTP {response.status_code}", "WARNING")
-            return None
-            
-    except Exception as e:
-        logger.log(f"  ❌ SERP API検索エラー: {str(e)}", "ERROR")
-        return None
-
-def extract_urls_from_html(html_content, domain, logger):
-    """HTMLからURLを抽出"""
-    urls = []
-    
-    try:
-        patterns = [
-            rf'href=["\']?(https?://(?:www\.)?{re.escape(domain)}[^"\'\s>]*)["\']?',
-            rf'(https?://(?:www\.)?{re.escape(domain)}[^\s<>"\'()]*)',
-        ]
-        
-        all_urls = set()
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, html_content, re.IGNORECASE)
-            
-            for match in matches:
-                url = match[0] if isinstance(match, tuple) else match
-                
-                # URLクリーニング
-                # Googleトラッキングパラメータを削除
-                if '&ved=' in url:
-                    url = url.split('&ved=')[0]
-                elif '?ved=' in url:
-                    url = url.split('?ved=')[0]
-                
-                # その他のトラッキングパラメータ
-                for param in ['&hl=', '?hl=', '&sl=', '&tl=', '&client=']:
-                    if param in url:
-                        url = url.split(param)[0]
-                
-                # 末尾の記号削除
-                url = url.rstrip('.,;:)"\'')
-                
-                # 有効性チェック
-                if url.startswith('http') and len(url) > 20:
-                    exclude_patterns = ['google.com', 'youtube.com', 'translate.google', 'webcache']
-                    if not any(ex in url.lower() for ex in exclude_patterns):
-                        all_urls.add(url)
-        
-        logger.log(f"    合計 {len(all_urls)} 件のユニークURL発見", "DEBUG")
-        
-        # URL品質スコアリング
-        scored_urls = []
-        for url in all_urls:
-            score = 0
-            url_lower = url.lower()
-            
-            if any(kw in url_lower for kw in ['product', 'item', 'detail', 'catalog', 'contents']):
-                score += 10
-            if re.search(r'\d{3,}', url):
-                score += 5
-            
-            scored_urls.append((url, score))
-        
-        scored_urls.sort(key=lambda x: x[1], reverse=True)
-        
-        for url, score in scored_urls[:10]:
-            urls.append({
-                'url': url,
-                'score': score
-            })
-            logger.log(f"    ✓ URL (スコア:{score}): {url[:80]}...", "DEBUG")
-        
-        if urls:
-            logger.log(f"  ✅ {len(urls)}件のURL抽出成功", "INFO")
-        else:
-            logger.log(f"  ⚠️ 該当URLなし", "WARNING")
-        
-        return urls
-        
-    except Exception as e:
-        logger.log(f"  ❌ URL抽出エラー: {str(e)}", "ERROR")
-        return []
-
-def clean_url(url):
-    """
-    URLを徹底的にクリーニング
-    - HTMLエンティティのデコード
-    - Unicodeエスケープシーケンスのデコード（u0026 → &）
-    - トラッキングパラメータの削除
-    - URLの正規化とバリデーション
-    """
-    try:
-        import html as html_module
-        import re
-        
-        # 1. HTMLエンティティをデコード（&amp; → &）
-        url = html_module.unescape(url)
-        
-        # 2. URLエンコーディングをデコード（%26 → &）
-        url = urllib.parse.unquote(url)
-        
-        # 3. Unicodeエスケープシーケンスのデコード（TCIタイムアウト問題の原因）
-        unicode_escapes = {
-            'u0026': '&', '/u0026': '&',
-            'u003d': '=', '/u003d': '=',
-            'u003f': '?', '/u003f': '?',
-            'u0023': '#', '/u0023': '#',
-            'u002f': '/', '/u002f': '/',
-            'u003a': ':', '/u003a': ':',
-            'u002b': '+', '/u002b': '+',
-        }
-        for escape, char in unicode_escapes.items():
-            url = url.replace(escape, char)
-        
-        # 4. Googleトラッキングパラメータを削除
-        tracking_params = ['&ved=', '?ved=', '&hl=', '?hl=', '&sl=', '&tl=', '&client=', '&prev=', '&sa=', '&source=', '&usg=']
-        for param in tracking_params:
-            if param in url:
-                url = url.split(param)[0]
-        
-        # 5. 末尾の記号を削除
-        url = url.rstrip('.,;:)"\'')  
-        
-        # 6. URLの末尾スラッシュを統一（正規化）
-        if url.endswith('/'):
-            url = url.rstrip('/')
-        
-        # 7. 不正な制御文字を削除
-        url = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', url)
-        
-        # 8. URLバリデーション（基本的な形式チェック）
-        if not url.startswith(('http://', 'https://')):
-            return None
-        
-        return url
-    except Exception as e:
-        return url
-
-def fetch_page_with_browser(url, logger):
-    """Browser API経由でページ取得（タイムアウト改善版）"""
-    clean_url_str = clean_url(url)
-    if not clean_url_str:
-        logger.log(f"  ❌ URLクリーニング失敗", "ERROR")
-        return None, None
-    
-    logger.log(f"  🌐 Browser API経由でページ取得", "DEBUG")
-    if url != clean_url_str:
-        logger.log(f"    元URL: {url[:80]}...", "DEBUG")
-        logger.log(f"    クリーンURL: {clean_url_str[:80]}...", "DEBUG")
-    else:
-        logger.log(f"    URL: {clean_url_str[:80]}...", "DEBUG")
-    
-    # 複数戦略でリトライ
-    strategies = [
-        ('networkidle', 45000),
-        ('load', 60000),
-        ('domcontentloaded', 30000)
-    ]
-    
-    for wait_type, timeout_ms in strategies:
+def load_tasks_from_disk():
+    if DATA_FILE.exists():
         try:
-            with sync_playwright() as p:
-                browser = p.chromium.connect_over_cdp(BROWSER_API_CONFIG['ws_endpoint'])
-                page = browser.contexts[0].new_page()
-                page.goto(clean_url_str, timeout=timeout_ms, wait_until=wait_type)
-                
-                # JavaScript動的レンダリングの待機（価格表示用）
-                time.sleep(3)  # 基本待機を3秒に延長
-                
-                # 価格要素の明示的な待機（最大5秒）
-                try:
-                    # 価格を含む要素が表示されるまで待機
-                    page.wait_for_selector('span:has-text("¥"), span:has-text("円"), span:has-text("$"), [class*="price"], [class*="Price"]', timeout=5000, state='visible')
-                    logger.log(f"  💰 価格要素を検出", "DEBUG")
-                except:
-                    logger.log(f"  ⚠️ 価格要素の明示的な待機タイムアウト（HTML取得は継続）", "DEBUG")
-                
-                # 追加の安全待機
-                time.sleep(2)
-                
-                html_content = page.content()
-                page.close()
-                browser.close()
-                
-                if len(html_content) >= 1000:
-                    logger.log(f"  ✅ ページ取得成功 [{wait_type}] ({len(html_content)} chars)", "INFO")
-                    return html_content, clean_url_str  # クリーンURLを返す
-        except Exception as e:
-            if 'Timeout' in str(e):
-                logger.log(f"  ⚠️ タイムアウト[{wait_type}]、次戦略試行", "DEBUG")
-                continue
-            logger.log(f"  ❌ エラー[{wait_type}]: {str(e)[:100]}", "ERROR")
-            break
-    
-    logger.log(f"  ❌ 全戦略失敗", "ERROR")
-    return None, None
+            return json.loads(DATA_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
 
 
-def search_with_strategy(product_name, site_info, serp_config, logger):
-    """検索戦略（SERP API使用）"""
-    site_name = site_info["name"]
-    domain = site_info["domain"]
-    
-    logger.log(f"🔍 {site_name} ({domain})を検索中", "INFO")
-    
-    if not serp_config['available']:
-        logger.log(f"  ❌ SERP API未設定", "ERROR")
-        return []
-    
-    search_queries = [
-        f"{product_name} site:{domain}",
-        f"{product_name} price site:{domain}",
-        f"{product_name} 価格 site:{domain}",
-    ]
-    
-    all_results = []
-    
-    for query_idx, query in enumerate(search_queries):
-        logger.log(f"  🔎 検索クエリ{query_idx+1}/3: {query}", "DEBUG")
-        
-        html = search_google_with_serp(query, serp_config, logger)
-        
-        if not html:
-            time.sleep(1)
-            continue
-        
-        urls = extract_urls_from_html(html, domain, logger)
-        
-        if urls:
-            for url_data in urls[:5]:
-                all_results.append({
-                    'url': url_data['url'],
-                    'site': site_name,
-                    'score': url_data.get('score', 0)
-                })
-            
-            logger.log(f"  ✅ {len(urls)}件のURL取得成功", "INFO")
-            break
-        
-        time.sleep(1)
-    
-    if all_results:
-        logger.log(f"✅ {site_name}: {len(all_results)}件のURL取得", "INFO")
-    else:
-        logger.log(f"❌ {site_name}: URL未発見", "ERROR")
-    
-    return all_results
-
-def calculate_product_name_similarity(name1, name2):
-    """製品名の類似度を簡易計算（0.0〜1.0）"""
-    if not name1 or not name2:
-        return 0.0
-    
-    # 正規化（小文字化、スペース削除）
-    name1_norm = name1.lower().replace(' ', '').replace('-', '')
-    name2_norm = name2.lower().replace(' ', '').replace('-', '')
-    
-    # 完全一致
-    if name1_norm == name2_norm:
-        return 1.0
-    
-    # 片方が他方を含む
-    if name1_norm in name2_norm or name2_norm in name1_norm:
-        return 0.8
-    
-    # 共通文字数の割合
-    common_chars = set(name1_norm) & set(name2_norm)
-    max_len = max(len(name1_norm), len(name2_norm))
-    if max_len > 0:
-        return len(common_chars) / max_len
-    
-    return 0.0
-
-def extract_product_info_from_page(html_content, product_name, url, site_name, model, logger):
-    """ページHTMLから製品情報を抽出"""
-    logger.log(f"  🤖 Gemini AIで製品情報を抽出中...", "DEBUG")
-    
+def persist_tasks_to_disk(task_dicts):
     try:
-        # HTMLの価格関連部分を優先的に抽出
-        if len(html_content) > 150000:
-            logger.log(f"  🔍 HTML解析: {len(html_content)} chars から価格情報を検索", "DEBUG")
-            
-            # 価格関連キーワードで分割して重要部分を抽出
-            price_keywords = ['価格', '円', '¥', 'price', 'yen', '税込', '税抜', '販売価格', '単価', 'mg', 'g', 'mL', 'L', 'USD', '$', '€']
-            important_chunks = []
-            
-            # HTMLを複数のチャンクに分割
-            chunk_size = 5000
-            for i in range(0, len(html_content), chunk_size):
-                chunk = html_content[i:i+chunk_size]
-                # 価格キーワードを含むチャンクを優先
-                if any(keyword in chunk for keyword in price_keywords):
-                    important_chunks.append(chunk)
-            
-            # 重要なチャンクを結合（最大150K chars）
-            if important_chunks:
-                html_content = '\n'.join(important_chunks[:30])  # 最大30チャンク
-                logger.log(f"  ✂️ 価格関連部分を抽出: {len(html_content)} chars", "DEBUG")
-            else:
-                # キーワードが見つからない場合は前半を使用
-                html_content = html_content[:150000]
-                logger.log(f"  ✂️ HTML切り詰め（前半）: 150000 chars", "DEBUG")
-        else:
-            logger.log(f"  📄 HTML全体を使用: {len(html_content)} chars", "DEBUG")
-        
-        prompt = f"""
-あなたは化学試薬のWebサイトからの製品情報抽出エキスパートです。
-以下のHTMLから、製品の詳細情報と**特に価格情報**を徹底的に抽出してください。
+        with _PERSIST_LOCK:
+            DATA_FILE.write_text(
+                json.dumps(task_dicts, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    except Exception:
+        pass
 
-【重要】価格情報の検索手順:
-1. まず、以下のHTMLパターンを探してください:
-   - <td>や<span>タグ内の「¥」「円」を含むテキスト
-   - class="price"、class="product-price"等の価格関連クラス
-   - JavaScriptの変数定義（price:、yen:等）
-   - テーブル構造内の価格列
-   - 「税込」「税抜」「販売価格」「単価」等のラベルの近く
 
-2. 容量・サイズ情報も同時に抽出:
-   - 「1mg」「5mg」「10mg」「100mg」「1g」「5g」等
-   - 「1mL」「10mL」「100mL」「1L」等
-   - サイズと価格は通常、同じ行や近接した要素にあります
+class Task:
+    def __init__(
+        self,
+        id=None,
+        title="",
+        description="",
+        date="",
+        priority="medium",
+        labels=None,
+        attachments=None,
+    ):
+        self.id = id or str(uuid.uuid4())
+        self.title = title
+        self.description = description
+        self.date = date  # "YYYY-MM-DD"
+        self.priority = priority  # low/medium/high
+        self.labels = labels or []
+        self.attachments = attachments or []  # base64データURI
+        self.created_at = datetime.now()
+        self.updated_at = datetime.now()
 
-3. 複数の価格がある場合:
-   - **全ての価格とサイズの組み合わせを抽出**してください
-   - 見つかった価格は1つも漏らさず全て記録してください
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "date": self.date,
+            "priority": self.priority,
+            "labels": self.labels,
+            "attachments": self.attachments,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
 
-【抽出する情報】
-- productName: 製品名（化合物名）
-- modelNumber: カタログ番号またはCAS番号
-- manufacturer: 製造元またはブランド名
-- offers: 価格情報のリスト（**重要**: 見つかった価格は全て含める）
-
-【offers配列の各要素】
-- size: 容量・サイズ（例: "1mg", "5mg", "10mg", "100g"等）
-- price: 価格（数値のみ、カンマなし）
-- inStock: 在庫状況（真偽値: true/false、不明な場合はtrue）
-
-【価格フォーマットの例】（これらを全て認識してください）:
-- 日本語: "¥34,000", "34,000円", "税込¥32,000", "税抜 ¥30,000"
-- 英語: "$340.00", "USD 340", "€300"
-- テーブル形式: "1mg | ¥14,800", "5mg | ¥36,100"
-- リスト形式: "• 1mg: 14,800円"
-
-【価格抽出の変換規則】
-- "¥34,000" → 34000
-- "34,000円" → 34000  
-- "$340.00" → 340
-- "税抜 ¥32,000" → 32000
-- カンマ、通貨記号は全て削除し、数値のみにする
-
-【出力形式】必ずJSON形式で出力:
-{{
-  "productName": "Y-27632 dihydrochloride",
-  "modelNumber": "146986-50-7",
-  "manufacturer": "Sigma-Aldrich",
-  "offers": [
-    {{"size": "1mg", "price": 34000, "inStock": true}},
-    {{"size": "5mg", "price": 54000, "inStock": true}},
-    {{"size": "10mg", "price": 78000, "inStock": true}}
-  ]
-}}
-
-**注意**: 価格が見つからない場合のみ offers を空配列 [] にしてください。
-HTMLに価格情報がある場合は、必ず抽出してください。
-
-【HTMLコンテンツ】
-{html_content}
-
-【ソースURL】
-{url}
-
-必ずJSON形式のみを返してください。説明文は不要です。
-"""
-        
-        # デバッグ: HTMLに価格情報が含まれているかチェック
-        price_indicators = [('¥', 'yen_symbol'), ('円', 'yen_kanji'), ('price', 'price_en'), 
-                           ('価格', 'price_ja'), ('税込', 'tax_included'), ('税抜', 'tax_excluded')]
-        found_indicators = []
-        for indicator, name in price_indicators:
-            count = html_content.count(indicator)
-            if count > 0:
-                found_indicators.append(f"{name}:{count}")
-        
-        if found_indicators:
-            logger.log(f"  🔍 HTML内価格キーワード検出: {', '.join(found_indicators)}", "DEBUG")
-        else:
-            logger.log(f"  ⚠️ HTML内に価格関連キーワードが見つかりません", "WARNING")
-        
-        # Gemini API呼び出し（複数回試行）
-        max_retries = 2
-        best_response = None
-        best_response_text = ""
-        
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    logger.log(f"  🔄 再試行 {attempt+1}/{max_retries}...", "DEBUG")
-                
-                # 試行回数に応じてgeneration_configを調整
-                generation_config = {
-                    "temperature": 0.1 + (attempt * 0.2),  # 0.1 -> 0.3
-                    "top_p": 0.95,
-                    "top_k": 40
-                }
-                
-                response = model.generate_content(prompt, generation_config=generation_config)
-                response_text = response.text.strip()
-                
-                logger.log(f"  📨 Gemini API応答受信 [{attempt+1}] ({len(response_text)} chars)", "DEBUG")
-                
-                # 有効なレスポンスかチェック（offersが含まれているか）
-                if len(response_text) > 200 and '"offers"' in response_text:
-                    # 価格が含まれている可能性が高い
-                    best_response_text = response_text
-                    logger.log(f"  ✅ 有効なレスポンスを取得", "DEBUG")
-                    break
-                elif len(response_text) > len(best_response_text):
-                    # より長いレスポンスを保持
-                    best_response_text = response_text
-            except Exception as e:
-                logger.log(f"  ⚠️ 試行{attempt+1}失敗: {str(e)}", "WARNING")
-                continue
-        
-        response_text = best_response_text
-        
-        # レスポンスが異常に短い場合は詳細を表示
-        if len(response_text) < 200:
-            logger.log(f"  ⚠️ Geminiレスポンスが短い: {response_text}", "WARNING")
-            # HTMLサンプルを表示（最初の500文字）
-            html_sample = html_content[:500].replace('\n', ' ')[:200]
-            logger.log(f"  📄 HTMLサンプル: {html_sample}...", "DEBUG")
-        
-        # JSONクリーニング
-        response_text = re.sub(r'^```json\s*', '', response_text)
-        response_text = re.sub(r'^```\s*', '', response_text)
-        response_text = re.sub(r'\s*```$', '', response_text)
-        response_text = response_text.strip()
-        
-        # JSONパース
-        product_info = json.loads(response_text)
-        
-        # 製品名の類似度チェック
-        extracted_name = product_info.get('productName', '')
-        similarity = calculate_product_name_similarity(product_name, extracted_name)
-        logger.log(f"  🔍 製品名類似度: {similarity:.2f} (検索: {product_name} vs 抽出: {extracted_name})", "DEBUG")
-        
-        if similarity < 0.3:
-            logger.log(f"  ⚠️ 製品名の類似度が低い（{similarity:.2f}）。別の製品の可能性あり。", "WARNING")
-        
-        # データ型検証
-        if 'offers' in product_info and isinstance(product_info['offers'], list):
-            valid_offers = []
-            for offer in product_info['offers']:
-                if 'price' in offer:
-                    try:
-                        if isinstance(offer['price'], str):
-                            price_str = offer['price'].replace(',', '').replace('¥', '').replace('円', '').replace('$', '').replace('€', '').strip()
-                            offer['price'] = float(price_str)
-                        else:
-                            offer['price'] = float(offer['price'])
-                        
-                        if offer['price'] > 0:
-                            valid_offers.append(offer)
-                    except:
-                        pass
-            
-            product_info['offers'] = valid_offers
-        
-        if product_info.get('offers'):
-            logger.log(f"  ✅ {len(product_info['offers'])}件の価格情報を抽出", "INFO")
-            for i, offer in enumerate(product_info['offers'][:3]):
-                logger.log(f"    - {offer.get('size', 'N/A')}: ¥{int(offer.get('price', 0)):,}", "DEBUG")
-        else:
-            logger.log(f"  ⚠️ 価格情報が見つかりませんでした", "WARNING")
-            if found_indicators:
-                logger.log(f"  💡 ヒント: HTML内に価格キーワードは存在しますが、Geminiが抽出できませんでした", "WARNING")
-                
-                # デバッグ: HTMLサンプルをファイルに保存
-                try:
-                    import os
-                    debug_dir = '/mnt/user-data/outputs/html_debug'
-                    os.makedirs(debug_dir, exist_ok=True)
-                    debug_file = f"{debug_dir}/{site_name.replace('/', '_').replace(' ', '_')}_sample.html"
-                    with open(debug_file, 'w', encoding='utf-8') as f:
-                        f.write(f"<!-- URL: {url} -->\n")
-                        f.write(f"<!-- Found indicators: {', '.join(found_indicators)} -->\n")
-                        f.write(html_content[:50000])  # 最初の50KBを保存
-                    logger.log(f"  💾 デバッグ用HTML保存: {os.path.basename(debug_file)}", "DEBUG")
-                except Exception as e:
-                    logger.log(f"  ⚠️ HTML保存失敗: {e}", "DEBUG")
-        
-        return product_info
-        
-    except json.JSONDecodeError as e:
-        logger.log(f"  ❌ JSON解析エラー: {str(e)}", "ERROR")
-        logger.log(f"  📄 生レスポンス: {response_text[:500]}", "DEBUG")
-        return None
-    except Exception as e:
-        logger.log(f"  ❌ 製品情報抽出エラー: {str(e)}", "ERROR")
-        import traceback
-        logger.log(f"  📋 詳細: {traceback.format_exc()}", "DEBUG")
-        return None
-
-def main():
-    st.markdown('<h1 class="main-header">🧪 化学試薬 価格比較システム（Browser API版 v3.3）</h1>', unsafe_allow_html=True)
-    
-    serp_config = check_serp_api_config()
-    
-    if serp_config['available'] and BROWSER_API_CONFIG['available']:
-        st.markdown(
-            f'<div class="api-status api-success">✅ LLM: Gemini 2.5 Pro | SERP API: {serp_config["zone_name"]} | Browser API: scraping_browser1</div>',
-            unsafe_allow_html=True
+    @classmethod
+    def from_dict(cls, data):
+        task = cls(
+            id=data["id"],
+            title=data["title"],
+            description=data["description"],
+            date=data["date"],
+            priority=data["priority"],
+            labels=data.get("labels", []),
+            attachments=data.get("attachments", []),
         )
+        try:
+            if data.get("created_at"):
+                task.created_at = datetime.fromisoformat(data["created_at"])
+        except Exception:
+            task.created_at = datetime.now()
+        try:
+            if data.get("updated_at"):
+                task.updated_at = datetime.fromisoformat(data["updated_at"])
+        except Exception:
+            task.updated_at = datetime.now()
+        return task
+
+
+# セッション初期化（起動時は常に現在週を表示）
+if "initialized" not in st.session_state:
+    st.session_state.tasks = [Task.from_dict(d) for d in load_tasks_from_disk()]
+    st.session_state.current_week = datetime.now().date()
+    st.session_state.image_modal_open = False
+    st.session_state.image_modal = None
+    st.session_state.edit_task_id = None
+    st.session_state.new_task_date = None
+    st.session_state.initialized = True
+
+
+# ユーティリティ
+def get_week_dates(start_date):
+    monday = start_date - timedelta(days=start_date.weekday())
+    return [monday + timedelta(days=i) for i in range(7)]
+
+
+def format_date_jp(date):
+    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+    return f"{date.month}/{date.day}({weekdays[date.weekday()]})"
+
+
+def get_tasks_for_date(date_str):
+    return [task for task in st.session_state.tasks if task.date == date_str]
+
+
+def save_task(task):
+    idx = next((i for i, t in enumerate(st.session_state.tasks) if t.id == task.id), None)
+    task.updated_at = datetime.now()
+    if idx is not None:
+        st.session_state.tasks[idx] = task
     else:
-        st.markdown(
-            '<div class="api-status api-warning">⚠️ API未設定</div>',
-            unsafe_allow_html=True
-        )
+        st.session_state.tasks.append(task)
+    persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
+
+
+def delete_task(task_id):
+    st.session_state.tasks = [t for t in st.session_state.tasks if t.id != task_id]
+    persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
+
+
+def process_uploaded_image(uploaded_file):
+    if uploaded_file is not None:
+        data = uploaded_file.read()
+        b64 = base64.b64encode(data).decode()
+        return {
+            "id": str(uuid.uuid4()),
+            "name": uploaded_file.name,
+            "type": uploaded_file.type,
+            "size": len(data),
+            "data": f"data:{uploaded_file.type};base64,{b64}",
+        }
+    return None
+
+
+# HTMLダッシュボード
+def generate_week_html(week_dates):
+    weekdays_jp = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
+    css = """
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans JP", "Yu Gothic", Arial, sans-serif; background:#f3f4f6; margin:0; padding:1rem;}
+      .container{max-width:1200px;margin:0 auto;}
+      .week-header{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;padding:1rem;border-radius:10px;text-align:center;margin-bottom:1rem;}
+      .grid{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;}
+      .day{background:#f8fafc;border-radius:8px;padding:10px;border:2px solid #e2e8f0;min-height:200px;}
+      .title{font-size:14px;font-weight:700;margin-bottom:6px;}
+      .date{font-size:12px;color:#6b7280;margin-bottom:8px;}
+      .task-card{background:#fff;border-radius:8px;padding:8px;margin:6px 0;border-left:4px solid #3b82f6;box-shadow:0 2px 4px rgba(0,0,0,0.06);}
+      .task-card.high{border-left-color:#ef4444;}
+      .task-card.medium{border-left-color:#f59e0b;}
+      .task-card.low{border-left-color:#10b981;}
+      .priority-badge{display:inline-block;padding:2px 6px;border-radius:9999px;font-size:10px;font-weight:700;margin-right:6px;}
+      .priority-high{background:#fecaca;color:#dc2626;}
+      .priority-medium{background:#fed7aa;color:#ea580c;}
+      .priority-low{background:#bbf7d0;color:#059669;}
+      .label{display:inline-block;background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:12px;font-size:10px;margin:2px;}
+      img.thumb{max-width:100%;border-radius:6px;border:1px solid #e5e7eb;margin-top:6px;}
+      .desc{font-size:12px;color:#374151;margin-top:4px;white-space:pre-wrap;}
+    </style>
+    """
+    ws, we = week_dates[0].strftime("%Y/%m/%d"), week_dates[6].strftime("%Y/%m/%d")
+    html = [
+        css,
+        '<div class="container">',
+        f'<div class="week-header"><h2>📅 {ws} - {we}</h2></div>',
+        '<div class="grid">',
+    ]
+    for i, date in enumerate(week_dates):
+        ds = date.strftime("%Y-%m-%d")
+        tasks = get_tasks_for_date(ds)
+        html.append('<div class="day">')
+        html.append(f'<div class="title">{weekdays_jp[i]}</div>')
+        html.append(f'<div class="date">{format_date_jp(date)}</div>')
+        if not tasks:
+            html.append('<div style="font-size:12px;color:#6b7280;">タスクなし</div>')
+        else:
+            for t in tasks:
+                pclass = t.priority
+                ptext = {"high": "高", "medium": "中", "low": "低"}[t.priority]
+                html.append(f'<div class="task-card {pclass}">')
+                html.append(f'<div><strong>{t.title}</strong> <span class="priority-badge priority-{pclass}">{ptext}</span></div>')
+                if t.description:
+                    html.append(f'<div class="desc">{t.description}</div>')
+                if t.labels:
+                    labels = "".join([f'<span class="label">{lb}</span>' for lb in t.labels])
+                    html.append(f'<div style="margin-top:4px;">{labels}</div>')
+                if t.attachments:
+                    for att in t.attachments:
+                        if att["type"].startswith("image/"):
+                            html.append(f'<img class="thumb" src="{att["data"]}" alt="{att["name"]}"/>')
+                html.append("</div>")
+        html.append("</div>")
+    html.append("</div></div>")
+    return "".join(html)
+
+
+# st.modal のフォールバック
+@contextmanager
+def modal_or_expander(title: str, key: str):
+    if hasattr(st, "modal"):
+        with st.modal(title, key=key):
+            yield
+    else:
+        with st.expander(title, expanded=True):
+            yield
+
+
+# D&Dボード（横スクロールで小画面でも確実に見える／keyは週開始日で安定化）
+def render_dnd_board(week_dates):
+    if not SORTABLE_AVAILABLE:
+        st.info("この機能を使うには requirements.txt に 'streamlit-sortables' を追加してください。")
         return
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        product_name = st.text_input(
-            "🔍 製品名を入力してください",
-            value="Y-27632",
-            placeholder="例: Y-27632, DMSO, Trizol, Quinpirole"
-        )
-    
-    with col2:
-        max_sites = st.number_input(
-            "最大検索サイト数",
-            min_value=1,
-            max_value=11,
-            value=11,
-            step=1
-        )
-    
-    st.markdown("---")
-    
-    if st.button("🚀 検索開始", type="primary", use_container_width=True):
-        if not product_name:
-            st.warning("⚠️ 製品名を入力してください")
-            return
-        
-        st.markdown("### 📝 処理ログ")
-        log_container = st.empty()
-        logger = RealTimeLogger(log_container)
-        
-        start_time = time.time()
-        logger.log(f"🚀 処理開始: {product_name}", "INFO")
-        logger.log(f"🤖 LLM: Gemini 2.5 Pro", "INFO")
-        logger.log(f"🔍 Google検索: SERP API (Zone: {serp_config['zone_name']})", "INFO")
-        logger.log(f"🌐 ページ取得: Browser API (Zone: scraping_browser1)", "INFO")
-        logger.log(f"🎯 対象サイト数: {max_sites}サイト", "INFO")
-        
-        model = setup_gemini()
-        if not model:
-            st.error("❌ Gemini APIの設定に失敗しました")
-            return
-        
-        all_products = []
-        sites_to_search = dict(list(TARGET_SITES.items())[:max_sites])
-        
-        for site_idx, (site_key, site_info) in enumerate(sites_to_search.items(), 1):
-            logger.log(f"\n--- サイト {site_idx}/{max_sites} ---", "INFO")
-            
-            search_results = search_with_strategy(product_name, site_info, serp_config, logger)
-            
-            if not search_results:
-                logger.log(f"⏭️  次のサイトへ", "DEBUG")
-                time.sleep(2)
+
+    # 横スクロールのラッパ
+    st.markdown('<div class="dnd-wrapper"><div class="dnd-scroll">', unsafe_allow_html=True)
+
+    date_keys = [d.strftime("%Y-%m-%d") for d in week_dates]
+    week_key = date_keys[0]  # 週開始日
+
+    # 各曜日のリスト（itemsは文字列配列）
+    containers_payload = []
+    for ds, d in zip(date_keys, week_dates):
+        items = [f"{t.title} [id:{t.id[:8]}]" for t in get_tasks_for_date(ds)]
+        # ヘッダにタスク数を表示
+        containers_payload.append({"header": f"{format_date_jp(d)}（{len(items)}）", "items": items})
+
+    # スタイル設定：各コンテナを「inline-block + 固定幅」にして横並び、横スクロール可能に
+    CONTAINER_WIDTH = 220  # px
+    kwargs = {
+        "multi_containers": True,
+        "direction": "horizontal",
+        "key": f"dnd_{week_key}",  # 安定キー
+    }
+    try:
+        params = inspect.signature(sort_items).parameters
+        if "styles" in params:
+            kwargs["styles"] = {
+                "container": {
+                    "display": "inline-block",
+                    "verticalAlign": "top",
+                    "width": f"{CONTAINER_WIDTH}px",
+                    "minWidth": f"{CONTAINER_WIDTH}px",
+                    "minHeight": "160px",
+                    "backgroundColor": "#f8fafc",
+                    "border": "2px dashed #e2e8f0",
+                    "borderRadius": "10px",
+                    "padding": "8px",
+                    "margin": "6px",
+                },
+                "item": {
+                    "padding": "6px 10px",
+                    "margin": "4px 0",
+                    "backgroundColor": "#fff",
+                    "border": "1px solid #e5e7eb",
+                    "borderRadius": "8px",
+                    "cursor": "grab",
+                    "whiteSpace": "normal",
+                },
+            }
+        elif "container_style" in params and "item_style" in params:
+            kwargs["container_style"] = {
+                "display": "inline-block",
+                "verticalAlign": "top",
+                "width": f"{CONTAINER_WIDTH}px",
+                "minWidth": f"{CONTAINER_WIDTH}px",
+                "minHeight": "160px",
+                "backgroundColor": "#f8fafc",
+                "border": "2px dashed #e2e8f0",
+                "borderRadius": "10px",
+                "padding": "8px",
+                "margin": "6px",
+            }
+            kwargs["item_style"] = {
+                "padding": "6px 10px",
+                "margin": "4px 0",
+                "backgroundColor": "#fff",
+                "border": "1px solid #e5e7eb",
+                "borderRadius": "8px",
+                "cursor": "grab",
+                "whiteSpace": "normal",
+            }
+    except Exception:
+        pass
+
+    # 実行
+    new_containers = sort_items(containers_payload, **kwargs)
+
+    # 並び替え結果を反映（末尾の [id:xxxxxxxx] を抜き出し）
+    id_to_new_date = {}
+    pattern = re.compile(r"\[id:([0-9a-fA-F-]{8})\]\s*$")
+    for idx, cont in enumerate(new_containers):
+        ds = date_keys[idx] if idx < len(date_keys) else None
+        if ds is None:
+            continue
+        items_list = cont.get("items") if isinstance(cont, dict) else (cont if isinstance(cont, list) else [])
+        for label in items_list:
+            s = label.get("content") if isinstance(label, dict) else str(label)
+            m = pattern.search(s)
+            if not m:
                 continue
-            
-            # 最もスコアが高いURLを使用
-            search_results.sort(key=lambda x: x.get('score', 0), reverse=True)
-            result = search_results[0]
-            
-            logger.log(f"🎯 トップURL: {result['url'][:80]}...", "INFO")
-            
-            # Browser API経由でページ取得（クリーンURLを取得）
-            html_content, clean_url = fetch_page_with_browser(result['url'], logger)
-            
-            if html_content and clean_url:
-                page_info = extract_product_info_from_page(
-                    html_content, 
-                    product_name, 
-                    clean_url,  # クリーンURLを使用
-                    result.get('site', 'unknown'),
-                    model, 
-                    logger
+            short = m.group(1)
+            # 先頭8桁でIDを解決
+            for t in st.session_state.tasks:
+                if t.id.startswith(short):
+                    id_to_new_date[t.id] = ds
+                    break
+
+    changed = False
+    for task in st.session_state.tasks:
+        new_date = id_to_new_date.get(task.id)
+        if new_date and new_date != task.date:
+            task.date = new_date
+            task.updated_at = datetime.now()
+            changed = True
+
+    if changed:
+        persist_tasks_to_disk([t.to_dict() for t in st.session_state.tasks])
+        st.success("タスクの日付を更新しました。")
+        st.rerun()
+
+    st.markdown('</div><div class="dnd-caption">横にスクロールできます。カードを別曜日へドラッグ＆ドロップすると自動で反映されます。</div></div>', unsafe_allow_html=True)
+
+
+# 画像プレビュー
+def open_image_modal(attachment):
+    st.session_state.image_modal = attachment
+    st.session_state.image_modal_open = True
+
+
+def close_image_modal():
+    st.session_state.image_modal = None
+    st.session_state.image_modal_open = False
+
+
+# 編集モーダル
+def open_edit_modal(task_id: str):
+    st.session_state.edit_task_id = task_id
+
+
+def close_edit_modal():
+    st.session_state.edit_task_id = None
+
+
+def render_edit_modal():
+    tid = st.session_state.edit_task_id
+    if not tid:
+        return
+    task = next((t for t in st.session_state.tasks if t.id == tid), None)
+    if not task:
+        close_edit_modal()
+        return
+
+    with modal_or_expander("タスクを編集", key=f"edit_modal_{tid}"):
+        with st.form(f"edit_form_{tid}"):
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                new_title = st.text_input("タスクタイトル *", value=task.title)
+                new_desc = st.text_area("説明", value=task.description)
+            with col2:
+                base_date = datetime.now().date()
+                try:
+                    if task.date:
+                        base_date = datetime.strptime(task.date, "%Y-%m-%d").date()
+                except Exception:
+                    pass
+                new_date = st.date_input("日付", value=base_date, key=f"edit_date_{tid}")
+                new_pri = st.selectbox(
+                    "優先度",
+                    ["low", "medium", "high"],
+                    index=["low", "medium", "high"].index(
+                        task.priority if task.priority in ["low", "medium", "high"] else "medium"
+                    ),
+                    key=f"edit_pri_{tid}",
                 )
-                
-                if page_info:
-                    page_info['source_site'] = result['site']
-                    page_info['source_url'] = clean_url  # クリーンURLを保存
-                    all_products.append(page_info)
-                    logger.log(f"✅ {result['site']}: 製品情報取得成功", "INFO")
-                else:
-                    logger.log(f"⚠️ {result['site']}: AI解析失敗", "WARNING")
-            else:
-                logger.log(f"❌ {result['site']}: ページ取得失敗", "ERROR")
-            
-            time.sleep(2)
-        
-        elapsed_time = time.time() - start_time
-        logger.log(f"\n🎉 処理完了: {elapsed_time:.1f}秒", "INFO")
-        logger.log(f"📊 取得成功: {len(all_products)}/{max_sites}サイト", "INFO")
-        
-        st.markdown("---")
-        st.markdown("## 📋 検索結果")
-        
-        if not all_products:
-            st.error("❌ 製品情報を抽出できませんでした")
-            st.info("💡 ヒント: 製品名を変更するか、検索対象サイトを調整してください")
-            return
-        
-        with_price = [p for p in all_products if p.get('offers')]
-        without_price = [p for p in all_products if not p.get('offers')]
-        
-        st.success(f"✅ {len(all_products)}件の製品情報を取得（価格情報あり: {len(with_price)}件、処理時間: {elapsed_time:.1f}秒）")
-        
-        # テーブル形式で表示
-        table_data = []
-        for product in all_products:
-            base_info = {
-                '製品名': product.get('productName', 'N/A'),
-                '販売元': product.get('source_site', 'N/A'),
-                '型番': product.get('modelNumber', 'N/A') or '',
-                'メーカー': product.get('manufacturer', 'N/A'),
-                'リンク先': product.get('source_url', 'N/A')
-            }
-            
-            if 'offers' in product and product['offers']:
-                for offer in product['offers']:
-                    row = base_info.copy()
-                    row['容量'] = offer.get('size', 'N/A')
-                    
-                    try:
-                        price = offer.get('price', 0)
-                        if isinstance(price, (int, float)) and price > 0:
-                            row['価格'] = f"¥{int(price):,}"
-                        else:
-                            row['価格'] = 'N/A'
-                    except:
-                        row['価格'] = 'N/A'
-                    
-                    row['在庫有無'] = '有' if offer.get('inStock') else '無'
-                    table_data.append(row)
-            else:
-                row = base_info.copy()
-                row['容量'] = 'N/A'
-                row['価格'] = 'N/A'
-                row['在庫有無'] = 'N/A'
-                table_data.append(row)
-        
-        if table_data:
-            df_display = pd.DataFrame(table_data)
-            # 列の順序を明示的に指定
-            column_order = ['製品名', '販売元', '型番', 'メーカー', 'リンク先', '容量', '価格', '在庫有無']
-            # 存在する列のみを選択
-            existing_columns = [col for col in column_order if col in df_display.columns]
-            df_display = df_display[existing_columns]
-            
-            # デバッグ: リンク先列の値を確認
-            if 'リンク先' in df_display.columns:
-                logger.log(f"  🔗 リンク先列を確認: {df_display['リンク先'].head(3).tolist()}", "DEBUG")
-            else:
-                logger.log(f"  ⚠️ リンク先列が見つかりません", "WARNING")
-            
-            st.dataframe(df_display, use_container_width=True, height=600)
-        
-        # CSV出力
-        st.markdown("---")
-        st.markdown("## 💾 データエクスポート")
-        
-        export_data = []
-        for product in all_products:
-            base_info = {
-                '製品名': product.get('productName', 'N/A'),
-                '販売元': product.get('source_site', 'N/A'),
-                '型番': product.get('modelNumber', 'N/A') or '',
-                'メーカー': product.get('manufacturer', 'N/A'),
-                'リンク先': product.get('source_url', 'N/A')
-            }
-            
-            if 'offers' in product and product['offers']:
-                for offer in product['offers']:
-                    row = base_info.copy()
-                    row['容量'] = offer.get('size', 'N/A')
-                    
-                    try:
-                        price = offer.get('price', 0)
-                        if isinstance(price, (int, float)) and price > 0:
-                            row['価格'] = f"¥{int(price):,}"
-                        else:
-                            row['価格'] = 'N/A'
-                    except:
-                        row['価格'] = 'N/A'
-                    
-                    row['在庫有無'] = '有' if offer.get('inStock') else '無'
-                    export_data.append(row)
-            else:
-                row = base_info.copy()
-                row['容量'] = 'N/A'
-                row['価格'] = 'N/A'
-                row['在庫有無'] = 'N/A'
-                export_data.append(row)
-        
-        df = pd.DataFrame(export_data)
-        
-        # CSV出力の列順序を明示的に指定
-        csv_column_order = ['製品名', '販売元', '型番', 'メーカー', 'リンク先', '容量', '価格', '在庫有無']
-        existing_csv_columns = [col for col in csv_column_order if col in df.columns]
-        df = df[existing_csv_columns]
-        
-        csv_buffer = StringIO()
-        df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
-        csv_data = csv_buffer.getvalue()
-        
+                new_labels_str = st.text_input("ラベル (カンマ区切り)", value=",".join(task.labels), key=f"edit_labels_{tid}")
+                clear_attachments = st.checkbox("既存の添付を全削除", value=False, key=f"edit_clear_{tid}")
+            st.markdown("新しい画像を追加（任意）")
+            new_upload = st.file_uploader(
+                "画像を追加", type=["png", "jpg", "jpeg", "gif"], key=f"edit_upload_{tid}"
+            )
+            submitted = st.form_submit_button("保存")
+
+        cancel = st.button("キャンセル", key=f"cancel_edit_{tid}")
+
+        if cancel:
+            close_edit_modal()
+            st.rerun()
+
+        if submitted:
+            task.title = (new_title or task.title).strip()
+            task.description = new_desc
+            task.date = new_date.strftime("%Y-%m-%d")
+            task.priority = new_pri
+            task.labels = [s.strip() for s in new_labels_str.split(",") if s.strip()]
+            if clear_attachments:
+                task.attachments = []
+            if new_upload:
+                att = process_uploaded_image(new_upload)
+                if att:
+                    task.attachments.append(att)
+            save_task(task)
+            close_edit_modal()
+            st.success("タスクを更新しました。")
+            st.rerun()
+
+
+# 週移動
+def goto_prev_week():
+    st.session_state.current_week = st.session_state.current_week - timedelta(days=7)
+    st.rerun()
+
+
+def goto_next_week():
+    st.session_state.current_week = st.session_state.current_week + timedelta(days=7)
+    st.rerun()
+
+
+def goto_this_week():
+    st.session_state.current_week = datetime.now().date()
+    st.rerun()
+
+
+# 新規作成（曜日ごとの＋から開く）
+def open_new_task_modal(date_str):
+    st.session_state.new_task_date = date_str
+
+
+def close_new_task_modal():
+    st.session_state.new_task_date = None
+
+
+def render_new_task_modal():
+    ds = st.session_state.new_task_date
+    if not ds:
+        return
+    dt = datetime.strptime(ds, "%Y-%m-%d").date()
+    with modal_or_expander(f"タスクを追加（{format_date_jp(dt)}）", key=f"new_task_{ds}"):
+        with st.form(f"form_new_{ds}"):
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                title = st.text_input("タスクタイトル *", key=f"title_{ds}")
+                description = st.text_area("説明", key=f"desc_{ds}")
+            with col2:
+                st.text_input("日付（固定）", value=ds, disabled=True, key=f"date_{ds}")
+                priority = st.selectbox("優先度", ["low", "medium", "high"], index=1, key=f"pri_{ds}")
+                labels_input = st.text_input("ラベル (カンマ区切り)", key=f"labels_{ds}")
+            uploaded_file = st.file_uploader(
+                "画像を添付", type=["png", "jpg", "jpeg", "gif"], key=f"upload_{ds}"
+            )
+            submitted = st.form_submit_button("💾 タスクを保存")
+
+        cancel = st.button("キャンセル", key=f"cancel_new_{ds}")
+
+        if cancel:
+            close_new_task_modal()
+            st.rerun()
+
+        if submitted and title.strip():
+            labels = [s.strip() for s in labels_input.split(",") if s.strip()]
+            attachments = []
+            if uploaded_file:
+                att = process_uploaded_image(uploaded_file)
+                if att:
+                    attachments.append(att)
+            new_task = Task(
+                title=title.strip(),
+                description=description,
+                date=ds,
+                priority=priority,
+                labels=labels,
+                attachments=attachments,
+            )
+            save_task(new_task)
+            close_new_task_modal()
+            st.success(f"✅ タスク「{title}」を作成しました！")
+            st.rerun()
+
+
+# メイン
+def main():
+    st.markdown('<h1 class="main-header">📅 週間タスクスケジューラー</h1>', unsafe_allow_html=True)
+
+    # サイドバー
+    with st.sidebar:
+        st.header("⚙️ 設定")
+        week_start = st.date_input("週を選択", value=st.session_state.current_week, key="week_selector")
+        st.session_state.current_week = week_start
+
+        st.subheader("📊 タスク統計（全体）")
+        total_tasks = len(st.session_state.tasks)
+        high_priority = len([t for t in st.session_state.tasks if t.priority == "high"])
+        st.metric("総タスク数", total_tasks)
+        st.metric("高優先度", high_priority)
+
+        st.subheader("💾 データ管理")
+        if st.session_state.tasks:
+            data = json.dumps([t.to_dict() for t in st.session_state.tasks], ensure_ascii=False, indent=2)
+            st.download_button(
+                "📥 JSONダウンロード",
+                data=data,
+                file_name=f"tasks_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+            )
+
+        st.subheader("🖼️ HTMLダッシュボード")
+        week_dates_sb = get_week_dates(st.session_state.current_week)
+        html_data = generate_week_html(week_dates_sb)
         st.download_button(
-            label="📥 CSVダウンロード",
-            data=csv_data,
-            file_name=f"chemical_prices_{product_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True
+            "📤 HTMLダウンロード",
+            data=html_data,
+            file_name=f"tasks_dashboard_{week_dates_sb[0].strftime('%Y%m%d')}_{week_dates_sb[6].strftime('%Y%m%d')}.html",
+            mime="text/html",
         )
+
+        st.subheader("危険な操作")
+        if st.button("🗑️ 全データクリア", type="secondary"):
+            if st.checkbox("本当に削除しますか？"):
+                st.session_state.tasks = []
+                persist_tasks_to_disk([])
+                st.rerun()
+
+    # 週表示
+    week_dates = get_week_dates(st.session_state.current_week)
+    ws, we = week_dates[0].strftime("%Y/%m/%d"), week_dates[6].strftime("%Y/%m/%d")
+    st.markdown(f'<div class="week-header"><h2>📅 {ws} - {we}</h2></div>', unsafe_allow_html=True)
+
+    # 週移動
+    nav_prev, nav_today, nav_next = st.columns([1, 1, 1])
+    with nav_prev:
+        if st.button("⬅ 前の週"):
+            goto_prev_week()
+    with nav_today:
+        if st.button("🏠 今週へ"):
+            goto_this_week()
+    with nav_next:
+        if st.button("次の週 ➡"):
+            goto_next_week()
+
+    # D&Dモード（常時展開・横スクロール対応）
+    with st.expander("🧲 ドラッグ＆ドロップでタスクを曜日移動（週内）", expanded=True):
+        if SORTABLE_AVAILABLE:
+            render_dnd_board(week_dates)
+        else:
+            st.info("この機能を使うには requirements.txt に 'streamlit-sortables' を追加してください。")
+
+    # 週間ビュー（各カラム：曜日ヘッダ → 追加ボタン → タスクリスト）
+    cols = st.columns(7)
+    weekdays = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
+
+    for i, (date, col, weekday) in enumerate(zip(week_dates, cols, weekdays)):
+        ds = date.strftime("%Y-%m-%d")
+        with col:
+            st.markdown(
+                f'<div class="dc-head day-head-{i}">'
+                f'  <div class="dc-name">{weekday}</div>'
+                f'  <div class="dc-date">{format_date_jp(date)}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            # 追加ボタン（ヘッダ直下）
+            st.markdown('<div class="add-btn">', unsafe_allow_html=True)
+            if st.button("＋ タスク追加", key=f"add_{ds}", use_container_width=True):
+                open_new_task_modal(ds)
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # タスクリスト（新しい順）
+            day_tasks = sorted(get_tasks_for_date(ds), key=lambda t: t.created_at, reverse=True)
+            if not day_tasks:
+                st.caption("タスクなし")
+            else:
+                for task in day_tasks:
+                    pcls = f"{task.priority}"
+                    badge_cls = f"priority-badge priority-{task.priority}"
+                    st.markdown(f'<div class="task-card {pcls}">', unsafe_allow_html=True)
+
+                    c1, c2 = st.columns([5, 1])
+                    with c1:
+                        st.markdown(f'<div class="task-title">{task.title}</div>', unsafe_allow_html=True)
+                        if task.priority != "medium":
+                            ptxt = {"high": "高", "medium": "中", "low": "低"}[task.priority]
+                            st.markdown(f'<span class="{badge_cls}">{ptxt}</span>', unsafe_allow_html=True)
+                    with c2:
+                        ec, dc = st.columns(2)
+                        with ec:
+                            if st.button("✏️", key=f"edit_{task.id}", help="編集"):
+                                open_edit_modal(task.id)
+                                st.rerun()
+                        with dc:
+                            if st.button("🗑️", key=f"delete_{task.id}", help="削除"):
+                                delete_task(task.id)
+                                st.rerun()
+
+                    if task.description:
+                        st.markdown(f'<div class="desc">{task.description}</div>', unsafe_allow_html=True)
+
+                    if task.labels:
+                        st.markdown(
+                            "".join([f'<span class="label-tag">{lb}</span>' for lb in task.labels]),
+                            unsafe_allow_html=True,
+                        )
+
+                    if task.attachments:
+                        st.markdown("**📎 添付ファイル:**")
+                        for att in task.attachments:
+                            if att["type"].startswith("image/"):
+                                if CLICKABLE_AVAILABLE:
+                                    clicked = clickable_images(
+                                        [att["data"]],
+                                        titles=[att["name"]],
+                                        div_style={"display": "inline-block", "padding": "2px"},
+                                        img_style={
+                                            "margin": "4px",
+                                            "height": "110px",
+                                            "border": "1px solid #e5e7eb",
+                                            "border-radius": "6px",
+                                        },
+                                        key=f"thumb_{task.id}_{att['id']}",
+                                    )
+                                    if clicked == 0:
+                                        open_image_modal(att)
+                                        st.rerun()
+                                else:
+                                    try:
+                                        b = base64.b64decode(att["data"].split(",")[1])
+                                        img = Image.open(io.BytesIO(b))
+                                        st.image(img, caption=att["name"], width=140)
+                                    except Exception as e:
+                                        st.error(f"画像の表示エラー: {e}")
+                                    if st.button("🔍", key=f"view_{task.id}_{att['id']}", help="拡大表示"):
+                                        open_image_modal(att)
+                                        st.rerun()
+
+                    st.markdown("</div>", unsafe_allow_html=True)  # .task-card
+
+    # 編集モーダル
+    render_edit_modal()
+
+    # 新規作成モーダル
+    render_new_task_modal()
+
+    # 画像プレビューモーダル
+    if st.session_state.image_modal_open and st.session_state.image_modal:
+        with modal_or_expander("画像プレビュー", key="image_modal"):
+            att = st.session_state.image_modal
+            st.image(att["data"], caption=att.get("name", ""), use_column_width=True)
+            if st.button("閉じる", key="close_image_modal_btn"):
+                close_image_modal()
+                st.rerun()
+
 
 if __name__ == "__main__":
     main()
