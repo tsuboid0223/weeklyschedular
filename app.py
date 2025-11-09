@@ -61,7 +61,8 @@ def setup_gemini():
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
         genai.configure(api_key=api_key)
-        return genai.GenerativeModel('gemini-1.5-flash')
+        # gemini-2.5-proに変更（最新モデル）
+        return genai.GenerativeModel('gemini-2.5-pro')
     except Exception as e:
         st.error(f"❌ Gemini API設定エラー: {str(e)}")
         return None
@@ -266,12 +267,14 @@ def fetch_page_with_browser(url, logger):
     clean_url_str = clean_url(url)
     if not clean_url_str:
         logger.log(f"  ❌ URLクリーニング失敗", "ERROR")
-        return None
+        return None, None
     
     logger.log(f"  🌐 Browser API経由でページ取得", "DEBUG")
     if url != clean_url_str:
         logger.log(f"    元URL: {url[:80]}...", "DEBUG")
         logger.log(f"    クリーンURL: {clean_url_str[:80]}...", "DEBUG")
+    else:
+        logger.log(f"    URL: {clean_url_str[:80]}...", "DEBUG")
     
     # 複数戦略でリトライ
     strategies = [
@@ -307,7 +310,7 @@ def fetch_page_with_browser(url, logger):
                 
                 if len(html_content) >= 1000:
                     logger.log(f"  ✅ ページ取得成功 [{wait_type}] ({len(html_content)} chars)", "INFO")
-                    return html_content
+                    return html_content, clean_url_str  # クリーンURLを返す
         except Exception as e:
             if 'Timeout' in str(e):
                 logger.log(f"  ⚠️ タイムアウト[{wait_type}]、次戦略試行", "DEBUG")
@@ -316,7 +319,7 @@ def fetch_page_with_browser(url, logger):
             break
     
     logger.log(f"  ❌ 全戦略失敗", "ERROR")
-    return None
+    return None, None
 
 
 def search_with_strategy(product_name, site_info, serp_config, logger):
@@ -369,7 +372,32 @@ def search_with_strategy(product_name, site_info, serp_config, logger):
     
     return all_results
 
-def extract_product_info_from_page(html_content, product_name, url, model, logger):
+def calculate_product_name_similarity(name1, name2):
+    """製品名の類似度を簡易計算（0.0〜1.0）"""
+    if not name1 or not name2:
+        return 0.0
+    
+    # 正規化（小文字化、スペース削除）
+    name1_norm = name1.lower().replace(' ', '').replace('-', '')
+    name2_norm = name2.lower().replace(' ', '').replace('-', '')
+    
+    # 完全一致
+    if name1_norm == name2_norm:
+        return 1.0
+    
+    # 片方が他方を含む
+    if name1_norm in name2_norm or name2_norm in name1_norm:
+        return 0.8
+    
+    # 共通文字数の割合
+    common_chars = set(name1_norm) & set(name2_norm)
+    max_len = max(len(name1_norm), len(name2_norm))
+    if max_len > 0:
+        return len(common_chars) / max_len
+    
+    return 0.0
+
+def extract_product_info_from_page(html_content, product_name, url, site_name, model, logger):
     """ページHTMLから製品情報を抽出"""
     logger.log(f"  🤖 Gemini AIで製品情報を抽出中...", "DEBUG")
     
@@ -537,6 +565,14 @@ HTMLに価格情報がある場合は、必ず抽出してください。
         # JSONパース
         product_info = json.loads(response_text)
         
+        # 製品名の類似度チェック
+        extracted_name = product_info.get('productName', '')
+        similarity = calculate_product_name_similarity(product_name, extracted_name)
+        logger.log(f"  🔍 製品名類似度: {similarity:.2f} (検索: {product_name} vs 抽出: {extracted_name})", "DEBUG")
+        
+        if similarity < 0.3:
+            logger.log(f"  ⚠️ 製品名の類似度が低い（{similarity:.2f}）。別の製品の可能性あり。", "WARNING")
+        
         # データ型検証
         if 'offers' in product_info and isinstance(product_info['offers'], list):
             valid_offers = []
@@ -566,19 +602,18 @@ HTMLに価格情報がある場合は、必ず抽出してください。
                 logger.log(f"  💡 ヒント: HTML内に価格キーワードは存在しますが、Geminiが抽出できませんでした", "WARNING")
                 
                 # デバッグ: HTMLサンプルをファイルに保存
-                if site_name:
-                    try:
-                        import os
-                        debug_dir = '/mnt/user-data/outputs/html_debug'
-                        os.makedirs(debug_dir, exist_ok=True)
-                        debug_file = f"{debug_dir}/{site_name.replace('/', '_').replace(' ', '_')}_sample.html"
-                        with open(debug_file, 'w', encoding='utf-8') as f:
-                            f.write(f"<!-- URL: {url} -->\n")
-                            f.write(f"<!-- Found indicators: {', '.join(found_indicators)} -->\n")
-                            f.write(html_content[:50000])  # 最初の50KBを保存
-                        logger.log(f"  💾 デバッグ用HTML保存: {os.path.basename(debug_file)}", "DEBUG")
-                    except Exception as e:
-                        logger.log(f"  ⚠️ HTML保存失敗: {e}", "DEBUG")
+                try:
+                    import os
+                    debug_dir = '/mnt/user-data/outputs/html_debug'
+                    os.makedirs(debug_dir, exist_ok=True)
+                    debug_file = f"{debug_dir}/{site_name.replace('/', '_').replace(' ', '_')}_sample.html"
+                    with open(debug_file, 'w', encoding='utf-8') as f:
+                        f.write(f"<!-- URL: {url} -->\n")
+                        f.write(f"<!-- Found indicators: {', '.join(found_indicators)} -->\n")
+                        f.write(html_content[:50000])  # 最初の50KBを保存
+                    logger.log(f"  💾 デバッグ用HTML保存: {os.path.basename(debug_file)}", "DEBUG")
+                except Exception as e:
+                    logger.log(f"  ⚠️ HTML保存失敗: {e}", "DEBUG")
         
         return product_info
         
@@ -593,13 +628,13 @@ HTMLに価格情報がある場合は、必ず抽出してください。
         return None
 
 def main():
-    st.markdown('<h1 class="main-header">🧪 化学試薬 価格比較システム（Browser API版）</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🧪 化学試薬 価格比較システム（Browser API版 v3.3）</h1>', unsafe_allow_html=True)
     
     serp_config = check_serp_api_config()
     
     if serp_config['available'] and BROWSER_API_CONFIG['available']:
         st.markdown(
-            f'<div class="api-status api-success">✅ SERP API: {serp_config["zone_name"]} | Browser API: scraping_browser1</div>',
+            f'<div class="api-status api-success">✅ LLM: Gemini 2.5 Pro | SERP API: {serp_config["zone_name"]} | Browser API: scraping_browser1</div>',
             unsafe_allow_html=True
         )
     else:
@@ -640,6 +675,7 @@ def main():
         
         start_time = time.time()
         logger.log(f"🚀 処理開始: {product_name}", "INFO")
+        logger.log(f"🤖 LLM: Gemini 2.5 Pro", "INFO")
         logger.log(f"🔍 Google検索: SERP API (Zone: {serp_config['zone_name']})", "INFO")
         logger.log(f"🌐 ページ取得: Browser API (Zone: scraping_browser1)", "INFO")
         logger.log(f"🎯 対象サイト数: {max_sites}サイト", "INFO")
@@ -668,15 +704,22 @@ def main():
             
             logger.log(f"🎯 トップURL: {result['url'][:80]}...", "INFO")
             
-            # Browser API経由でページ取得
-            html_content = fetch_page_with_browser(result['url'], logger)
+            # Browser API経由でページ取得（クリーンURLを取得）
+            html_content, clean_url = fetch_page_with_browser(result['url'], logger)
             
-            if html_content:
-                page_info = extract_product_info_from_page(html_content, product_name, result['url'], model, logger, site_name=result.get('site', 'unknown'))
+            if html_content and clean_url:
+                page_info = extract_product_info_from_page(
+                    html_content, 
+                    product_name, 
+                    clean_url,  # クリーンURLを使用
+                    result.get('site', 'unknown'),
+                    model, 
+                    logger
+                )
                 
                 if page_info:
                     page_info['source_site'] = result['site']
-                    page_info['source_url'] = result['url']
+                    page_info['source_url'] = clean_url  # クリーンURLを保存
                     all_products.append(page_info)
                     logger.log(f"✅ {result['site']}: 製品情報取得成功", "INFO")
                 else:
@@ -709,7 +752,7 @@ def main():
             base_info = {
                 '製品名': product.get('productName', 'N/A'),
                 '販売元': product.get('source_site', 'N/A'),
-                '型番': product.get('modelNumber', 'N/A'),
+                '型番': product.get('modelNumber', 'N/A') or '',
                 'メーカー': product.get('manufacturer', 'N/A'),
                 'リンク先': product.get('source_url', 'N/A')
             }
@@ -744,6 +787,13 @@ def main():
             # 存在する列のみを選択
             existing_columns = [col for col in column_order if col in df_display.columns]
             df_display = df_display[existing_columns]
+            
+            # デバッグ: リンク先列の値を確認
+            if 'リンク先' in df_display.columns:
+                logger.log(f"  🔗 リンク先列を確認: {df_display['リンク先'].head(3).tolist()}", "DEBUG")
+            else:
+                logger.log(f"  ⚠️ リンク先列が見つかりません", "WARNING")
+            
             st.dataframe(df_display, use_container_width=True, height=600)
         
         # CSV出力
@@ -754,33 +804,41 @@ def main():
         for product in all_products:
             base_info = {
                 '製品名': product.get('productName', 'N/A'),
-                '型番': product.get('modelNumber', 'N/A'),
-                'メーカー': product.get('manufacturer', 'N/A'),
                 '販売元': product.get('source_site', 'N/A'),
-                'URL': product.get('source_url', 'N/A')
+                '型番': product.get('modelNumber', 'N/A') or '',
+                'メーカー': product.get('manufacturer', 'N/A'),
+                'リンク先': product.get('source_url', 'N/A')
             }
             
             if 'offers' in product and product['offers']:
                 for offer in product['offers']:
                     row = base_info.copy()
-                    row['サイズ'] = offer.get('size', 'N/A')
+                    row['容量'] = offer.get('size', 'N/A')
                     
                     try:
                         price = offer.get('price', 0)
-                        row['価格'] = int(price) if isinstance(price, (int, float)) else 0
+                        if isinstance(price, (int, float)) and price > 0:
+                            row['価格'] = f"¥{int(price):,}"
+                        else:
+                            row['価格'] = 'N/A'
                     except:
-                        row['価格'] = 0
+                        row['価格'] = 'N/A'
                     
-                    row['在庫'] = '有' if offer.get('inStock') else '無'
+                    row['在庫有無'] = '有' if offer.get('inStock') else '無'
                     export_data.append(row)
             else:
                 row = base_info.copy()
-                row['サイズ'] = 'N/A'
-                row['価格'] = 0
-                row['在庫'] = 'N/A'
+                row['容量'] = 'N/A'
+                row['価格'] = 'N/A'
+                row['在庫有無'] = 'N/A'
                 export_data.append(row)
         
         df = pd.DataFrame(export_data)
+        
+        # CSV出力の列順序を明示的に指定
+        csv_column_order = ['製品名', '販売元', '型番', 'メーカー', 'リンク先', '容量', '価格', '在庫有無']
+        existing_csv_columns = [col for col in csv_column_order if col in df.columns]
+        df = df[existing_csv_columns]
         
         csv_buffer = StringIO()
         df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
